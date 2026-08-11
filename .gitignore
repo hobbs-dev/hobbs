@@ -1,0 +1,35 @@
+# R / RStudio / Posit
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+.positai
+
+# macOS
+.DS_Store
+
+# R package build/check artifacts
+*.Rcheck/
+*.tar.gz
+
+# R compiled code
+src/*.o
+src/*.so
+src/*.dll
+
+# C / compiled objects and libraries
+*.o
+*.obj
+*.so
+*.dll
+*.dylib
+*.a
+*.lib
+*.exe
+*.out
+
+# Binary/data artifacts
+*.bin
+
+# Cache/temp files
+.cache/

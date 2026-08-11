@@ -1,0 +1,16 @@
+Package: hobbs
+Type: Package
+Title: High Dimensional Bayesian Data Analysis
+Version: 0.3.4
+Authors@R: person("Mike", "Kleinsasser", email = "mkleinsa@umich.edu", 
+    role = c("aut", "cre"))
+Description: Enables high dimensional statistical modeling using Bayesian 
+    inference and provides a probabilistic programming language for high 
+    dimensional problems.
+License: MIT
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.0
+SystemRequirements: Cargo (Rust's package manager), rustc, C compiler
+URL: https://github.com/hobbs/hobbs
+BugReports: https://github.com/hobbs/hobbs/issues
