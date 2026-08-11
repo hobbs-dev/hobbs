@@ -5,7 +5,7 @@ use std::ffi::CString;
 #[cfg(windows)]
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufWriter, Write};
 use std::os::raw::{c_char, c_int, c_void};
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
@@ -75,8 +75,6 @@ type ContinuousAdaptiveSweepFn = unsafe extern "C" fn(
 type ScalarCandidateFn = unsafe extern "C" fn(*mut f64, c_int, c_int, f64, f64) -> f64;
 type ScalarAcceptFn = unsafe extern "C" fn();
 type ScalarRejectFn = unsafe extern "C" fn(*mut f64, c_int, c_int, f64, f64);
-type SwitchValueFn = unsafe extern "C" fn(*const f64, c_int) -> f64;
-type SwitchApplyFn = unsafe extern "C" fn(*mut f64, c_int, f64, f64) -> c_int;
 
 #[cfg(unix)]
 unsafe fn open_library(path: &str) -> Result<*mut c_void, String> {
@@ -190,12 +188,6 @@ struct SaveRange {
     len: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DeclaredSwitchSpec {
-    position_j: usize,
-    position_k: usize,
-}
-
 struct RuntimeBlock {
     name: String,
     offset: usize,
@@ -224,8 +216,6 @@ struct PosteriorLib {
     cache_free: Option<CacheVoidFn>,
     cache_snapshot: Option<CacheVoidFn>,
     cache_restore: Option<CacheVoidFn>,
-    switch_values: Vec<SwitchValueFn>,
-    switch_applies: Vec<SwitchApplyFn>,
     cache_initialized: bool,
     initialized: bool,
     mode: EvalMode,
@@ -237,7 +227,6 @@ impl PosteriorLib {
         path: &str,
         requested_mode: EvalMode,
         allow_missing_logp: bool,
-        switch_derived_count: usize,
     ) -> Result<Self, String> {
         unsafe {
             let handle = open_library(path)?;
@@ -250,29 +239,6 @@ impl PosteriorLib {
             let cache_free_ptr = optional_symbol(handle, "hobbs_cache_free");
             let cache_snapshot_ptr = optional_symbol(handle, "hobbs_cache_snapshot");
             let cache_restore_ptr = optional_symbol(handle, "hobbs_cache_restore");
-            let mut switch_values = Vec::with_capacity(switch_derived_count);
-            let mut switch_applies = Vec::with_capacity(switch_derived_count);
-            for index in 0..switch_derived_count {
-                let value_symbol = format!("hobbs_switch_value_{}", index);
-                let apply_symbol = format!("hobbs_switch_apply_{}", index);
-                let Some(value_ptr) = optional_symbol(handle, &value_symbol) else {
-                    close_library(handle);
-                    return Err(format!(
-                        "derived switch symbol {} was not found",
-                        value_symbol
-                    ));
-                };
-                let Some(apply_ptr) = optional_symbol(handle, &apply_symbol) else {
-                    close_library(handle);
-                    return Err(format!(
-                        "derived switch symbol {} was not found",
-                        apply_symbol
-                    ));
-                };
-                switch_values.push(std::mem::transmute::<*mut c_void, SwitchValueFn>(value_ptr));
-                switch_applies.push(std::mem::transmute::<*mut c_void, SwitchApplyFn>(apply_ptr));
-            }
-
             if logp_ptr.is_none() && batch_ptr.is_none() && !allow_missing_logp {
                 close_library(handle);
                 return Err(
@@ -344,8 +310,6 @@ impl PosteriorLib {
                 cache_free,
                 cache_snapshot,
                 cache_restore,
-                switch_values,
-                switch_applies,
                 cache_initialized: false,
                 initialized: false,
                 mode,
@@ -383,10 +347,6 @@ impl PosteriorLib {
     fn has_cache(&self) -> bool {
         self.cache_init.is_some()
     }
-    fn has_cache_snapshot_restore(&self) -> bool {
-        self.cache_snapshot.is_some() && self.cache_restore.is_some()
-    }
-
     fn init_cache(&mut self, theta: &[f64]) -> Result<(), String> {
         if let Some(f) = self.cache_init {
             let rc = unsafe { f(theta.as_ptr(), theta.len() as c_int) };
@@ -413,54 +373,6 @@ impl PosteriorLib {
                 f();
             }
         }
-    }
-
-    #[inline(always)]
-    fn switch_coordinate_value(&self, position: usize, theta: &[f64]) -> Option<f64> {
-        let value = if position < theta.len() {
-            theta[position]
-        } else {
-            let derived_index = position.checked_sub(theta.len())?;
-            let value_fn = *self.switch_values.get(derived_index)?;
-            unsafe { value_fn(theta.as_ptr(), theta.len() as c_int) }
-        };
-        if value.is_finite() { Some(value) } else { None }
-    }
-
-    #[inline(always)]
-    fn assign_switch_coordinate(
-        &self,
-        position: usize,
-        current_value: f64,
-        proposed_value: f64,
-        theta: &mut [f64],
-    ) -> bool {
-        if !proposed_value.is_finite() {
-            return false;
-        }
-        if position < theta.len() {
-            theta[position] = proposed_value;
-            true
-        } else {
-            let Some(derived_index) = position.checked_sub(theta.len()) else {
-                return false;
-            };
-            let Some(apply_fn) = self.switch_applies.get(derived_index).copied() else {
-                return false;
-            };
-            unsafe {
-                apply_fn(
-                    theta.as_mut_ptr(),
-                    theta.len() as c_int,
-                    current_value,
-                    proposed_value,
-                ) == 0
-            }
-        }
-    }
-
-    fn switch_derived_count(&self) -> usize {
-        self.switch_values.len()
     }
 
     #[inline(always)]
@@ -624,14 +536,8 @@ struct Config {
     target_accept_set: bool,
     covariance_mode: CovarianceMode,
     covariance_max_dim: usize,
-    switch_enabled: bool,
-    switch_threshold: f64,
-    switch_max_dim: usize,
-    switch_derived_count: usize,
-    declared_switches: Vec<DeclaredSwitchSpec>,
     adapt_diagnostics_out: Option<String>,
     adapt_covariance_out: Option<String>,
-    switch_diagnostics_out: Option<String>,
     out: Option<String>,
     mean_out: Option<String>,
     mean_ranges: Vec<SaveRange>,
@@ -659,14 +565,8 @@ impl Default for Config {
             target_accept_set: false,
             covariance_mode: CovarianceMode::Auto,
             covariance_max_dim: 128,
-            switch_enabled: false,
-            switch_threshold: 0.8,
-            switch_max_dim: 128,
-            switch_derived_count: 0,
-            declared_switches: Vec::new(),
             adapt_diagnostics_out: None,
             adapt_covariance_out: None,
-            switch_diagnostics_out: None,
             out: Some("chain.bin".to_string()),
             mean_out: None,
             mean_ranges: Vec::new(),
@@ -697,11 +597,6 @@ fn parse_args() -> Config {
             }
             "--quiet" => {
                 cfg.quiet = true;
-                i += 1;
-                continue;
-            }
-            "--switch" => {
-                cfg.switch_enabled = true;
                 i += 1;
                 continue;
             }
@@ -737,25 +632,9 @@ fn parse_args() -> Config {
             "--adapt-covariance-max-dim" | "--covariance-max-dim" => {
                 cfg.covariance_max_dim = parse_positive(val, "--adapt-covariance-max-dim")
             }
-            "--switch-threshold" => {
-                cfg.switch_threshold = parse_f64(val, "--switch-threshold")
-            }
-            "--switch-max-dim" => {
-                cfg.switch_max_dim = parse_positive(val, "--switch-max-dim")
-            }
-            "--switch-derived-count" => {
-                cfg.switch_derived_count = parse_usize(val, "--switch-derived-count")
-            }
-            "--switch-pair" => cfg.declared_switches.push(parse_declared_switch_spec(val)),
-            "--switch-pairs-file" => {
-                cfg.declared_switches.extend(read_declared_switch_specs(val));
-            }
             "--adapt-diagnostics-out" => cfg.adapt_diagnostics_out = Some(val.clone()),
             "--adapt-cov-out" | "--adapt-covariance-out" => {
                 cfg.adapt_covariance_out = Some(val.clone())
-            }
-            "--switch-diagnostics-out" => {
-                cfg.switch_diagnostics_out = Some(val.clone())
             }
             "--out" => {
                 cfg.out = Some(val.clone());
@@ -797,43 +676,8 @@ fn parse_args() -> Config {
         eprintln!("--target-accept must be between 0 and 1");
         process::exit(2);
     }
-    if !(cfg.switch_threshold > 0.0 && cfg.switch_threshold < 1.0) {
-        eprintln!("--switch-threshold must be between 0 and 1");
-        process::exit(2);
-    }
-    if !cfg.declared_switches.is_empty() {
-        cfg.switch_enabled = true;
-    }
-    let switch_coordinate_count = cfg
-        .dim
-        .checked_add(cfg.switch_derived_count)
-        .unwrap_or_else(|| {
-            eprintln!("--dim plus --switch-derived-count is too large");
-            process::exit(2);
-        });
-    for pair in &cfg.declared_switches {
-        if pair.position_j >= switch_coordinate_count || pair.position_k >= switch_coordinate_count {
-            eprintln!(
-                "--switch-pair {}:{} exceeds the {} available ordinary-plus-derived switch coordinates",
-                pair.position_j, pair.position_k, switch_coordinate_count
-            );
-            process::exit(2);
-        }
-        if pair.position_j == pair.position_k {
-            eprintln!("--switch-pair cannot pair a coordinate with itself");
-            process::exit(2);
-        }
-    }
     if cfg.adapt_until.is_none() {
         cfg.adapt_until = Some(cfg.burnin);
-    }
-    if cfg.switch_enabled && cfg.adapt_until.unwrap_or(0) < 20 {
-        eprintln!("--switch requires at least 20 adaptation/warmup sweeps");
-        process::exit(2);
-    }
-    if cfg.switch_enabled && cfg.adapt_until.unwrap_or(0) > cfg.burnin {
-        eprintln!("--switch requires --adapt-until to be no greater than --burnin/--warmups so pair learning freezes before retained sampling");
-        process::exit(2);
     }
     if cfg.update_mode == UpdateMode::Block && cfg.blocks.is_empty() {
         eprintln!("--update block requires at least one --block name:offset:len");
@@ -879,44 +723,6 @@ fn parse_args() -> Config {
         }
     }
     cfg
-}
-
-fn parse_declared_switch_spec(s: &str) -> DeclaredSwitchSpec {
-    let parts: Vec<&str> = s.split(':').collect();
-    if parts.len() != 2 {
-        eprintln!("--switch-pair must have form zero_based_position_j:zero_based_position_k");
-        process::exit(2);
-    }
-    DeclaredSwitchSpec {
-        position_j: parse_usize(parts[0], "--switch-pair position_j"),
-        position_k: parse_usize(parts[1], "--switch-pair position_k"),
-    }
-}
-
-fn read_declared_switch_specs(path: &str) -> Vec<DeclaredSwitchSpec> {
-    let file = File::open(path).unwrap_or_else(|error| {
-        eprintln!("could not open --switch-pairs-file {}: {}", path, error);
-        process::exit(2);
-    });
-    let reader = BufReader::new(file);
-    let mut pairs = Vec::new();
-    for (line_index, line) in reader.lines().enumerate() {
-        let line = line.unwrap_or_else(|error| {
-            eprintln!(
-                "could not read --switch-pairs-file {} line {}: {}",
-                path,
-                line_index + 1,
-                error
-            );
-            process::exit(2);
-        });
-        let value = line.split('#').next().unwrap_or("").trim();
-        if value.is_empty() {
-            continue;
-        }
-        pairs.push(parse_declared_switch_spec(value));
-    }
-    pairs
 }
 
 fn parse_update_mode(s: &str) -> UpdateMode {
@@ -1152,13 +958,6 @@ Defaults:
   --block name:off:len[:indexed[:type:lo:hi]] Scalar block metadata; type may be discrete
   --adapt-covariance auto  full conditional-variance, diagonal, or off
   --adapt-covariance-max-dim 128  auto uses full covariance through this dimension
-  --switch                Learn and apply deterministic correlation switches
-  --switch-threshold 0.8  Minimum absolute correlation for a greedy disjoint pair
-  --switch-max-dim 128    Maximum continuous dimension for automatic dense greedy discovery
-  --switch-derived-count N  Number of generated derived switch coordinates in the model library
-  --switch-pair j:k       Explicit zero-based ordinary/derived pair; repeatable and may overlap
-  --switch-pairs-file PATH  File containing one zero-based j:k pair per line
-  --switch-diagnostics-out PATH  Frozen pair and acceptance diagnostics CSV
   --adapt-diagnostics-out PATH  Per-coordinate adaptation diagnostics CSV
   --adapt-cov-out PATH     Learned covariance/correlation diagnostics CSV
   --eval auto             auto, scalar, or batch
@@ -1324,118 +1123,6 @@ struct CovarianceSummary {
     max_abs_correlation: Option<f64>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SwitchSource {
-    Greedy,
-    Declared(usize),
-}
-
-impl SwitchSource {
-    fn name(&self) -> &'static str {
-        match self {
-            SwitchSource::Greedy => "greedy",
-            SwitchSource::Declared(_) => "declared",
-        }
-    }
-
-    fn declaration_index(&self) -> Option<usize> {
-        match self {
-            SwitchSource::Greedy => None,
-            SwitchSource::Declared(index) => Some(*index),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct SwitchPair {
-    position_j: usize,
-    position_k: usize,
-    center_j: f64,
-    center_k: f64,
-    sd_j: f64,
-    sd_k: f64,
-    correlation: f64,
-    source: SwitchSource,
-    warmup_attempts: u64,
-    warmup_accepts: u64,
-    sampling_attempts: u64,
-    sampling_accepts: u64,
-}
-
-impl SwitchPair {
-    fn new(
-        position_j: usize,
-        position_k: usize,
-        center_j: f64,
-        center_k: f64,
-        sd_j: f64,
-        sd_k: f64,
-        correlation: f64,
-        source: SwitchSource,
-    ) -> Self {
-        Self {
-            position_j,
-            position_k,
-            center_j,
-            center_k,
-            sd_j,
-            sd_k,
-            correlation,
-            source,
-            warmup_attempts: 0,
-            warmup_accepts: 0,
-            sampling_attempts: 0,
-            sampling_accepts: 0,
-        }
-    }
-
-    #[inline]
-    fn proposed_values(&self, current_j: f64, current_k: f64) -> Option<(f64, f64)> {
-        if !(current_j.is_finite()
-            && current_k.is_finite()
-            && self.sd_j.is_finite()
-            && self.sd_j > 0.0
-            && self.sd_k.is_finite()
-            && self.sd_k > 0.0)
-        {
-            return None;
-        }
-        let z_j = (current_j - self.center_j) / self.sd_j;
-        let z_k = (current_k - self.center_k) / self.sd_k;
-        let (new_z_j, new_z_k) = if self.correlation < 0.0 {
-            (z_k, z_j)
-        } else {
-            (-z_k, -z_j)
-        };
-        let proposed_j = self.center_j + self.sd_j * new_z_j;
-        let proposed_k = self.center_k + self.sd_k * new_z_k;
-        if proposed_j.is_finite() && proposed_k.is_finite() {
-            Some((proposed_j, proposed_k))
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    fn record(&mut self, accepted: bool, warmup: bool) {
-        if warmup {
-            self.warmup_attempts += 1;
-            self.warmup_accepts += if accepted { 1 } else { 0 };
-        } else {
-            self.sampling_attempts += 1;
-            self.sampling_accepts += if accepted { 1 } else { 0 };
-        }
-    }
-
-    fn total_attempts(&self) -> u64 {
-        self.warmup_attempts + self.sampling_attempts
-    }
-
-    fn total_accepts(&self) -> u64 {
-        self.warmup_accepts + self.sampling_accepts
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 struct GeometrySchedule {
     collect_start: usize,
@@ -1452,8 +1139,8 @@ impl GeometrySchedule {
         }
         // The first 40% of adaptive warmup is scalar-only. Discard the first
         // half of that stage, accumulate geometry over the second half, then
-        // fit it exactly once. The remaining 60% tunes scalar RW scales while
-        // the frozen switches run.
+        // fit it exactly once. The remaining 60% tunes scalar RW scales with
+        // the fitted covariance geometry held fixed.
         let forty_percent = adapt_until.saturating_mul(2).saturating_add(4) / 5;
         let fit_iter = forty_percent.max(20).min(adapt_until);
         let collect_start = (fit_iter / 2).max(1);
@@ -1466,251 +1153,6 @@ impl GeometrySchedule {
     #[inline]
     fn should_collect(&self, iter: usize) -> bool {
         self.fit_iter > 0 && iter >= self.collect_start && iter <= self.fit_iter
-    }
-}
-
-struct DeclaredSwitchTrainer {
-    specs: Vec<DeclaredSwitchSpec>,
-    unique_positions: Vec<usize>,
-    edge_locals: Vec<(usize, usize)>,
-    n: usize,
-    mean: Vec<f64>,
-    m2: Vec<f64>,
-    delta: Vec<f64>,
-    co_moments: Vec<f64>,
-}
-
-impl DeclaredSwitchTrainer {
-    fn new(specs: Vec<DeclaredSwitchSpec>) -> Self {
-        // A cycle such as beta(1)~u(1), ..., beta(1)~u(m) repeats beta(1)
-        // in every edge. Train each distinct coordinate's center and variance
-        // once per sweep, then retain only one cross-moment per declared edge.
-        // This keeps storage O(V + E) and avoids recalculating the repeated
-        // coordinate moments E times.
-        let mut unique_positions = Vec::with_capacity(specs.len().saturating_mul(2));
-        for spec in &specs {
-            unique_positions.push(spec.position_j);
-            unique_positions.push(spec.position_k);
-        }
-        unique_positions.sort_unstable();
-        unique_positions.dedup();
-
-        let edge_locals = specs
-            .iter()
-            .map(|spec| {
-                let local_j = unique_positions
-                    .binary_search(&spec.position_j)
-                    .expect("declared switch position_j must be indexed");
-                let local_k = unique_positions
-                    .binary_search(&spec.position_k)
-                    .expect("declared switch position_k must be indexed");
-                (local_j, local_k)
-            })
-            .collect();
-        let coordinate_count = unique_positions.len();
-        let edge_count = specs.len();
-        Self {
-            specs,
-            unique_positions,
-            edge_locals,
-            n: 0,
-            mean: vec![0.0; coordinate_count],
-            m2: vec![0.0; coordinate_count],
-            delta: vec![0.0; coordinate_count],
-            co_moments: vec![0.0; edge_count],
-        }
-    }
-
-    #[inline]
-    fn update_values(&mut self, values: &[f64]) {
-        if self.specs.is_empty() || values.len() != self.unique_positions.len() {
-            return;
-        }
-        self.n += 1;
-        let inv_n = 1.0 / self.n as f64;
-
-        for (local, &value) in values.iter().enumerate() {
-            let delta = value - self.mean[local];
-            self.delta[local] = delta;
-            self.mean[local] += delta * inv_n;
-            self.m2[local] += delta * (value - self.mean[local]);
-        }
-        for (edge, &(local_j, local_k)) in self.edge_locals.iter().enumerate() {
-            let value_k = values[local_k];
-            self.co_moments[edge] +=
-                self.delta[local_j] * (value_k - self.mean[local_k]);
-        }
-    }
-
-    #[inline]
-    fn update(&mut self, theta: &[f64], posterior: &PosteriorLib) {
-        if self.specs.is_empty() {
-            return;
-        }
-        let mut values = Vec::with_capacity(self.unique_positions.len());
-        for &position in &self.unique_positions {
-            let Some(value) = posterior.switch_coordinate_value(position, theta) else {
-                return;
-            };
-            values.push(value);
-        }
-        self.update_values(&values);
-    }
-
-    fn pairs(&self) -> Vec<SwitchPair> {
-        if self.n < 2 {
-            return Vec::new();
-        }
-        let denom = (self.n - 1) as f64;
-        self.specs
-            .iter()
-            .copied()
-            .zip(self.edge_locals.iter().copied())
-            .zip(self.co_moments.iter().copied())
-            .enumerate()
-            .filter_map(|(index, ((spec, (local_j, local_k)), co_moment))| {
-                let variance_j = self.m2[local_j] / denom;
-                let variance_k = self.m2[local_k] / denom;
-                let center_j = self.mean[local_j];
-                let center_k = self.mean[local_k];
-                if !(variance_j.is_finite()
-                    && variance_j > 0.0
-                    && variance_k.is_finite()
-                    && variance_k > 0.0
-                    && center_j.is_finite()
-                    && center_k.is_finite())
-                {
-                    return None;
-                }
-                let covariance = co_moment / denom;
-                let correlation = covariance / (variance_j * variance_k).sqrt();
-                if !correlation.is_finite() {
-                    return None;
-                }
-                Some(SwitchPair::new(
-                    spec.position_j,
-                    spec.position_k,
-                    center_j,
-                    center_k,
-                    variance_j.sqrt(),
-                    variance_k.sqrt(),
-                    correlation.clamp(-1.0, 1.0),
-                    SwitchSource::Declared(index + 1),
-                ))
-            })
-            .collect()
-    }
-}
-
-fn same_unordered_pair(left: &SwitchPair, right: &SwitchPair) -> bool {
-    (left.position_j == right.position_j && left.position_k == right.position_k)
-        || (left.position_j == right.position_k && left.position_k == right.position_j)
-}
-
-fn combine_switch_pairs(
-    mut declared: Vec<SwitchPair>,
-    greedy: Vec<SwitchPair>,
-) -> Vec<SwitchPair> {
-    // User-declared pairs are kept in source order so a `for` declaration is
-    // a deterministic cycle. Greedy pairs are appended, with exact duplicate
-    // edges removed. Overlapping declared pairs are intentional and valid:
-    // each pair is a separate MH kernel applied sequentially.
-    for pair in greedy {
-        if !declared.iter().any(|existing| same_unordered_pair(existing, &pair)) {
-            declared.push(pair);
-        }
-    }
-    declared
-}
-
-struct SwitchController {
-    enabled: bool,
-    threshold: f64,
-    schedule: GeometrySchedule,
-    active: bool,
-    pairs: Vec<SwitchPair>,
-}
-
-impl SwitchController {
-    fn new(enabled: bool, threshold: f64, schedule: GeometrySchedule) -> Self {
-        Self {
-            enabled,
-            threshold,
-            schedule,
-            active: false,
-            pairs: Vec::new(),
-        }
-    }
-
-    fn activate(&mut self, declared: Vec<SwitchPair>, greedy: Vec<SwitchPair>) {
-        if !self.enabled || self.active {
-            return;
-        }
-        self.pairs = combine_switch_pairs(declared, greedy);
-        self.active = true;
-    }
-
-    fn record(&mut self, pair_index: usize, accepted: bool, warmup: bool) {
-        self.pairs[pair_index].record(accepted, warmup);
-    }
-
-    fn write_diagnostics(&self, path: &str) {
-        let file = File::create(path).unwrap_or_else(|error| {
-            eprintln!("could not create switch diagnostics {}: {}", path, error);
-            process::exit(1);
-        });
-        let mut writer = BufWriter::with_capacity(1 << 16, file);
-        writeln!(
-            writer,
-            "pair,source,declaration,position_j,position_k,correlation,switch_type,center_j,center_k,sd_j,sd_k,warmup_attempts,warmup_accepts,warmup_acceptance,sampling_attempts,sampling_accepts,sampling_acceptance,total_attempts,total_accepts,total_acceptance,training_start,training_end"
-        )
-        .unwrap();
-        for (index, pair) in self.pairs.iter().enumerate() {
-            let warmup_rate = pair.warmup_accepts as f64 / pair.warmup_attempts.max(1) as f64;
-            let sampling_rate =
-                pair.sampling_accepts as f64 / pair.sampling_attempts.max(1) as f64;
-            let total_attempts = pair.total_attempts();
-            let total_accepts = pair.total_accepts();
-            let total_rate = total_accepts as f64 / total_attempts.max(1) as f64;
-            let switch_type = if pair.correlation < 0.0 {
-                "centered_swap"
-            } else {
-                "centered_signed_swap"
-            };
-            let declaration = pair
-                .source
-                .declaration_index()
-                .map(|value| value.to_string())
-                .unwrap_or_default();
-            writeln!(
-                writer,
-                "{},{},{},{},{},{:.17e},{},{:.17e},{:.17e},{:.17e},{:.17e},{},{},{:.17e},{},{},{:.17e},{},{},{:.17e},{},{}",
-                index + 1,
-                pair.source.name(),
-                declaration,
-                pair.position_j + 1,
-                pair.position_k + 1,
-                pair.correlation,
-                switch_type,
-                pair.center_j,
-                pair.center_k,
-                pair.sd_j,
-                pair.sd_k,
-                pair.warmup_attempts,
-                pair.warmup_accepts,
-                warmup_rate,
-                pair.sampling_attempts,
-                pair.sampling_accepts,
-                sampling_rate,
-                total_attempts,
-                total_accepts,
-                total_rate,
-                self.schedule.collect_start,
-                self.schedule.fit_iter,
-            )
-            .unwrap();
-        }
-        writer.flush().unwrap();
     }
 }
 
@@ -1925,78 +1367,6 @@ impl WarmupPackedMoments {
         true
     }
 
-    fn greedy_switch_pairs(&self, positions: &[usize], threshold: f64) -> Vec<SwitchPair> {
-        if self.n < 2 || self.dim < 2 || positions.len() != self.dim {
-            return Vec::new();
-        }
-        let denom = (self.n - 1) as f64;
-        let variances = self.variances();
-        let valid: Vec<bool> = (0..self.dim)
-            .map(|local| {
-                let variance = variances[local];
-                variance.is_finite() && variance > 0.0 && self.mean[local].is_finite()
-            })
-            .collect();
-
-        // Sorting every eligible edge once is equivalent to repeatedly taking
-        // the strongest edge remaining after its two endpoints are removed,
-        // but reduces pair construction from a repeated cubic scan to
-        // O(p^2 log p).  The local-index tie breakers preserve deterministic
-        // behavior when two correlations have exactly the same magnitude.
-        let edge_capacity = self
-            .dim
-            .checked_mul(self.dim.saturating_sub(1))
-            .and_then(|value| value.checked_div(2))
-            .unwrap_or(0);
-        let mut edges: Vec<(f64, usize, usize, f64)> = Vec::with_capacity(edge_capacity);
-        for i in 0..self.dim {
-            if !valid[i] {
-                continue;
-            }
-            let variance_i = variances[i];
-            for j in (i + 1)..self.dim {
-                if !valid[j] {
-                    continue;
-                }
-                let variance_j = variances[j];
-                let covariance = self.m2[j * (j + 1) / 2 + i] / denom;
-                let correlation = covariance / (variance_i * variance_j).sqrt();
-                let magnitude = correlation.abs();
-                if correlation.is_finite() && magnitude > threshold {
-                    edges.push((magnitude, i, j, correlation));
-                }
-            }
-        }
-        edges.sort_by(|left, right| {
-            right
-                .0
-                .total_cmp(&left.0)
-                .then_with(|| left.1.cmp(&right.1))
-                .then_with(|| left.2.cmp(&right.2))
-        });
-
-        let mut used = vec![false; self.dim];
-        let mut pairs = Vec::with_capacity(self.dim / 2);
-        for (_, local_j, local_k, correlation) in edges {
-            if used[local_j] || used[local_k] {
-                continue;
-            }
-            used[local_j] = true;
-            used[local_k] = true;
-            pairs.push(SwitchPair::new(
-                positions[local_j],
-                positions[local_k],
-                self.mean[local_j],
-                self.mean[local_k],
-                variances[local_j].sqrt(),
-                variances[local_k].sqrt(),
-                correlation,
-                SwitchSource::Greedy,
-            ));
-        }
-        pairs
-    }
-
     fn fill_shape_suggestions(&mut self, out: &mut [f64]) -> bool {
         if self.n < 5 || self.dim == 0 || out.len() != self.dim {
             return false;
@@ -2160,7 +1530,6 @@ struct CovarianceAdapter {
     shape_work: Vec<f64>,
     state: CovarianceState,
     shape_mode: ShapeAdaptationMode,
-    greedy_switches_enabled: bool,
 }
 
 impl CovarianceAdapter {
@@ -2168,8 +1537,6 @@ impl CovarianceAdapter {
         mode: CovarianceMode,
         positions: Vec<usize>,
         max_full_dim: usize,
-        require_full_moments: bool,
-        switch_max_dim: usize,
     ) -> Self {
         let dim = positions.len();
         let shape_mode = match mode {
@@ -2184,49 +1551,36 @@ impl CovarianceAdapter {
                 }
             }
         };
-        // Dense automatic pair discovery is optional in large models. Explicit
-        // switch cycles are trained separately with O(V + E) storage for the V
-        // distinct coordinates and E declared edges, and remain available above
-        // this limit.
-        let greedy_switches_enabled = require_full_moments && dim <= switch_max_dim;
-        let need_full_state =
-            greedy_switches_enabled || shape_mode == ShapeAdaptationMode::ConditionalFull;
         let state = if dim == 0 {
             CovarianceState::Off
-        } else if need_full_state {
-            CovarianceState::Full(WarmupPackedMoments::new(dim))
-        } else if shape_mode == ShapeAdaptationMode::MarginalDiagonal {
-            CovarianceState::Diagonal(WarmupDiagonalMoments::new(dim))
         } else {
-            CovarianceState::Off
+            match shape_mode {
+                ShapeAdaptationMode::ConditionalFull => {
+                    CovarianceState::Full(WarmupPackedMoments::new(dim))
+                }
+                ShapeAdaptationMode::MarginalDiagonal => {
+                    CovarianceState::Diagonal(WarmupDiagonalMoments::new(dim))
+                }
+                ShapeAdaptationMode::Off => CovarianceState::Off,
+            }
         };
         Self {
             shape_work: vec![1.0; dim],
             positions,
             state,
             shape_mode,
-            greedy_switches_enabled,
         }
     }
 
     fn name(&self) -> &'static str {
-        match (self.shape_mode, self.greedy_switches_enabled) {
-            (ShapeAdaptationMode::ConditionalFull, true) => {
-                "one-time full covariance -> conditional scalar scales + greedy switches"
-            }
-            (ShapeAdaptationMode::ConditionalFull, false) => {
+        match self.shape_mode {
+            ShapeAdaptationMode::ConditionalFull => {
                 "one-time full covariance -> conditional scalar scales"
             }
-            (ShapeAdaptationMode::MarginalDiagonal, true) => {
-                "one-time diagonal scalar scales; full moments for greedy switches"
-            }
-            (ShapeAdaptationMode::MarginalDiagonal, false) => {
+            ShapeAdaptationMode::MarginalDiagonal => {
                 "one-time diagonal covariance -> marginal scalar scales"
             }
-            (ShapeAdaptationMode::Off, true) => {
-                "scale adaptation off; one-time full moments for greedy switches"
-            }
-            (ShapeAdaptationMode::Off, false) => "off",
+            ShapeAdaptationMode::Off => "off",
         }
     }
 
@@ -2274,22 +1628,6 @@ impl CovarianceAdapter {
             }
         }
         changed
-    }
-
-    fn greedy_enabled(&self) -> bool {
-        self.greedy_switches_enabled
-    }
-
-    fn switch_pairs(&self, threshold: f64) -> Vec<SwitchPair> {
-        if !self.greedy_switches_enabled {
-            return Vec::new();
-        }
-        match &self.state {
-            CovarianceState::Full(model) => {
-                model.greedy_switch_pairs(&self.positions, threshold)
-            }
-            CovarianceState::Diagonal(_) | CovarianceState::Off => Vec::new(),
-        }
     }
 
     fn summary(&self) -> CovarianceSummary {
@@ -3035,378 +2373,6 @@ fn discrete_state_count(lower: i64, upper: i64, block_name: &str) -> usize {
     })
 }
 
-#[derive(Clone, Copy)]
-struct CoordinateBlockRef {
-    block_index: usize,
-    scalar_index: c_int,
-}
-
-#[inline]
-fn block_needs_snapshot_for_rejection(block: &RuntimeBlock) -> bool {
-    block.cache_update.is_some()
-        && block.cache_undo.is_none()
-        && !block.cache_update_reversible
-}
-
-#[derive(Clone, Copy)]
-struct CoordinateChange {
-    position: usize,
-    old_value: f64,
-    proposed_value: f64,
-}
-
-#[inline]
-fn switch_values_close(left: f64, right: f64) -> bool {
-    let scale = 1.0 + left.abs().max(right.abs());
-    (left - right).abs() <= 1e-9 * scale
-}
-
-fn build_switch_proposal(
-    pair: &SwitchPair,
-    theta: &[f64],
-    posterior: &PosteriorLib,
-) -> Option<Vec<f64>> {
-    let current_j = posterior.switch_coordinate_value(pair.position_j, theta)?;
-    let current_k = posterior.switch_coordinate_value(pair.position_k, theta)?;
-    let (proposed_j, proposed_k) = pair.proposed_values(current_j, current_k)?;
-    let coordinates = [pair.position_j, pair.position_k];
-    let current_values = [current_j, current_k];
-    let proposed_values = [proposed_j, proposed_k];
-
-    // Ordinary coordinates and user-defined derived coordinates can be
-    // disjoint or can have a setter that touches the other coordinate. Try
-    // both deterministic assignment orders and retain the first one whose
-    // getters exactly realize the two proposed switch coordinates.
-    for order in [[0usize, 1usize], [1usize, 0usize]] {
-        let mut proposed_theta = theta.to_vec();
-        let mut ok = true;
-        for which in order {
-            if !posterior.assign_switch_coordinate(
-                coordinates[which],
-                current_values[which],
-                proposed_values[which],
-                &mut proposed_theta,
-            ) {
-                ok = false;
-                break;
-            }
-        }
-        if !ok {
-            continue;
-        }
-        let Some(realized_j) =
-            posterior.switch_coordinate_value(pair.position_j, &proposed_theta)
-        else {
-            continue;
-        };
-        let Some(realized_k) =
-            posterior.switch_coordinate_value(pair.position_k, &proposed_theta)
-        else {
-            continue;
-        };
-        if switch_values_close(realized_j, proposed_j)
-            && switch_values_close(realized_k, proposed_k)
-        {
-            return Some(proposed_theta);
-        }
-    }
-    None
-}
-
-fn collect_coordinate_changes(
-    theta: &[f64],
-    proposed_theta: &[f64],
-) -> Option<Vec<CoordinateChange>> {
-    if theta.len() != proposed_theta.len() {
-        return None;
-    }
-    let mut changes = Vec::new();
-    for (position, (&old_value, &proposed_value)) in
-        theta.iter().zip(proposed_theta.iter()).enumerate()
-    {
-        if !old_value.is_finite() || !proposed_value.is_finite() {
-            return None;
-        }
-        if old_value.to_bits() != proposed_value.to_bits() {
-            changes.push(CoordinateChange {
-                position,
-                old_value,
-                proposed_value,
-            });
-        }
-    }
-    Some(changes)
-}
-
-fn rollback_block_switch(
-    theta: &mut [f64],
-    blocks: &[RuntimeBlock],
-    coordinate_blocks: &[CoordinateBlockRef],
-    changes: &[CoordinateChange],
-    order: &[usize],
-    staged_count: usize,
-    used_snapshot: bool,
-    posterior: &PosteriorLib,
-) {
-    if used_snapshot {
-        posterior.cache_restore();
-        for change_index in order[..staged_count].iter().copied() {
-            let change = changes[change_index];
-            theta[change.position] = change.old_value;
-        }
-        return;
-    }
-
-    for change_index in order[..staged_count].iter().rev().copied() {
-        let change = changes[change_index];
-        let coordinate = coordinate_blocks[change.position];
-        let block = &blocks[coordinate.block_index];
-        if let Some(undo_fn) = block.cache_undo {
-            unsafe {
-                undo_fn(
-                    theta.as_ptr(),
-                    coordinate.scalar_index,
-                    change.old_value,
-                );
-            }
-            theta[change.position] = change.old_value;
-        } else if block.cache_update_reversible {
-            theta[change.position] = change.old_value;
-            if let Some(update_fn) = block.cache_update {
-                unsafe {
-                    update_fn(
-                        theta.as_ptr(),
-                        coordinate.scalar_index,
-                        change.proposed_value,
-                    );
-                }
-            }
-        } else {
-            theta[change.position] = change.old_value;
-        }
-    }
-}
-
-fn stage_block_switch_in_order(
-    theta: &mut [f64],
-    blocks: &[RuntimeBlock],
-    coordinate_blocks: &[CoordinateBlockRef],
-    changes: &[CoordinateChange],
-    order: &[usize],
-    posterior: &PosteriorLib,
-) -> Option<(f64, bool)> {
-    if changes.is_empty() || order.len() != changes.len() {
-        return None;
-    }
-    let used_snapshot = order.iter().copied().any(|change_index| {
-        let change = changes[change_index];
-        let coordinate = coordinate_blocks[change.position];
-        block_needs_snapshot_for_rejection(&blocks[coordinate.block_index])
-    });
-    if used_snapshot {
-        posterior.cache_snapshot();
-    }
-
-    // Each scalar block-local difference is the exact full-target change for
-    // that one-coordinate transition. The sum over an arbitrary derived
-    // switch update therefore telescopes to log pi(T(theta)) - log pi(theta),
-    // even when the derived setter changes many underlying parameters.
-    let mut log_alpha = 0.0;
-    let mut staged_count = 0usize;
-    for change_index in order.iter().copied() {
-        let change = changes[change_index];
-        let coordinate = coordinate_blocks[change.position];
-        let block = &blocks[coordinate.block_index];
-        if block.value_kind != ValueKind::Continuous {
-            rollback_block_switch(
-                theta,
-                blocks,
-                coordinate_blocks,
-                changes,
-                order,
-                staged_count,
-                used_snapshot,
-                posterior,
-            );
-            return None;
-        }
-        let current_local = unsafe { (block.f)(theta.as_ptr(), coordinate.scalar_index) };
-        if !current_local.is_finite() {
-            rollback_block_switch(
-                theta,
-                blocks,
-                coordinate_blocks,
-                changes,
-                order,
-                staged_count,
-                used_snapshot,
-                posterior,
-            );
-            return None;
-        }
-
-        theta[change.position] = change.proposed_value;
-        if let Some(update_fn) = block.cache_update {
-            unsafe {
-                update_fn(
-                    theta.as_ptr(),
-                    coordinate.scalar_index,
-                    change.old_value,
-                );
-            }
-        }
-        staged_count += 1;
-
-        let proposed_local = unsafe { (block.f)(theta.as_ptr(), coordinate.scalar_index) };
-        if !proposed_local.is_finite() {
-            rollback_block_switch(
-                theta,
-                blocks,
-                coordinate_blocks,
-                changes,
-                order,
-                staged_count,
-                used_snapshot,
-                posterior,
-            );
-            return None;
-        }
-        log_alpha += proposed_local - current_local;
-    }
-
-    Some((log_alpha, used_snapshot))
-}
-
-fn attempt_block_switch(
-    pair: &SwitchPair,
-    theta: &mut [f64],
-    current_logp: &mut f64,
-    blocks: &[RuntimeBlock],
-    coordinate_blocks: &[CoordinateBlockRef],
-    posterior: &PosteriorLib,
-    rng: &mut Xoshiro256StarStar,
-) -> bool {
-    let changes = if pair.position_j < theta.len() && pair.position_k < theta.len() {
-        let current_j = theta[pair.position_j];
-        let current_k = theta[pair.position_k];
-        let Some((proposed_j, proposed_k)) = pair.proposed_values(current_j, current_k) else {
-            return false;
-        };
-        let mut changes = Vec::with_capacity(2);
-        if current_j.to_bits() != proposed_j.to_bits() {
-            changes.push(CoordinateChange {
-                position: pair.position_j,
-                old_value: current_j,
-                proposed_value: proposed_j,
-            });
-        }
-        if current_k.to_bits() != proposed_k.to_bits() {
-            changes.push(CoordinateChange {
-                position: pair.position_k,
-                old_value: current_k,
-                proposed_value: proposed_k,
-            });
-        }
-        changes
-    } else {
-        let Some(proposed_theta) = build_switch_proposal(pair, theta, posterior) else {
-            return false;
-        };
-        let Some(changes) = collect_coordinate_changes(theta, &proposed_theta) else {
-            return false;
-        };
-        changes
-    };
-    if changes.is_empty() {
-        return false;
-    }
-
-    let mut selected_order: Vec<usize> = (0..changes.len()).collect();
-    let mut transaction = stage_block_switch_in_order(
-        theta,
-        blocks,
-        coordinate_blocks,
-        &changes,
-        &selected_order,
-        posterior,
-    );
-    if transaction.is_none() {
-        selected_order.reverse();
-        transaction = stage_block_switch_in_order(
-            theta,
-            blocks,
-            coordinate_blocks,
-            &changes,
-            &selected_order,
-            posterior,
-        );
-    }
-    let Some((log_alpha, used_snapshot)) = transaction else {
-        return false;
-    };
-
-    let accepted = metropolis_accept(log_alpha, rng.uniform_open01());
-    if accepted {
-        *current_logp += log_alpha;
-        true
-    } else {
-        rollback_block_switch(
-            theta,
-            blocks,
-            coordinate_blocks,
-            &changes,
-            &selected_order,
-            changes.len(),
-            used_snapshot,
-            posterior,
-        );
-        false
-    }
-}
-
-fn attempt_full_switch(
-    pair: &SwitchPair,
-    theta: &mut [f64],
-    current_logp: &mut f64,
-    posterior: &mut PosteriorLib,
-    rng: &mut Xoshiro256StarStar,
-) -> bool {
-    if pair.position_j < theta.len() && pair.position_k < theta.len() {
-        let current_j = theta[pair.position_j];
-        let current_k = theta[pair.position_k];
-        let Some((proposed_j, proposed_k)) = pair.proposed_values(current_j, current_k) else {
-            return false;
-        };
-        theta[pair.position_j] = proposed_j;
-        theta[pair.position_k] = proposed_k;
-        let proposed_logp = posterior.logp(theta);
-        let accepted = proposed_logp.is_finite()
-            && metropolis_accept(proposed_logp - *current_logp, rng.uniform_open01());
-        if accepted {
-            *current_logp = proposed_logp;
-            true
-        } else {
-            theta[pair.position_j] = current_j;
-            theta[pair.position_k] = current_k;
-            false
-        }
-    } else {
-        let Some(proposed_theta) = build_switch_proposal(pair, theta, posterior) else {
-            return false;
-        };
-        let proposed_logp = posterior.logp(&proposed_theta);
-        let accepted = proposed_logp.is_finite()
-            && metropolis_accept(proposed_logp - *current_logp, rng.uniform_open01());
-        if accepted {
-            theta.copy_from_slice(&proposed_theta);
-            *current_logp = proposed_logp;
-            true
-        } else {
-            false
-        }
-    }
-}
-
 fn total_iterations(cfg: &Config) -> usize {
     let retained_iterations = cfg.samples.checked_mul(cfg.thin).unwrap_or_else(|| {
         eprintln!("--samples multiplied by --thin is too large");
@@ -3433,14 +2399,7 @@ fn run_block_sampler(
     });
 
     let mut covered = vec![false; dim];
-    let mut coordinate_blocks = vec![
-        CoordinateBlockRef {
-            block_index: usize::MAX,
-            scalar_index: 0,
-        };
-        dim
-    ];
-    for (block_index, block) in blocks.iter().enumerate() {
+    for block in &blocks {
         let end = block.offset.checked_add(block.len).unwrap_or_else(|| {
             eprintln!("block {} offset/length overflow", block.name);
             process::exit(2);
@@ -3449,7 +2408,7 @@ fn run_block_sampler(
             eprintln!("block {} offset/length exceeds dim", block.name);
             process::exit(2);
         }
-        for (local, position) in (block.offset..end).enumerate() {
+        for position in block.offset..end {
             if covered[position] {
                 eprintln!(
                     "parameter position {} is covered by more than one scalar block",
@@ -3458,10 +2417,6 @@ fn run_block_sampler(
                 process::exit(2);
             }
             covered[position] = true;
-            coordinate_blocks[position] = CoordinateBlockRef {
-                block_index,
-                scalar_index: (local + 1) as c_int,
-            };
         }
     }
     if let Some(position) = covered.iter().position(|value| !*value) {
@@ -3478,33 +2433,6 @@ fn run_block_sampler(
             *value_kind = block.value_kind;
         }
     }
-    for pair in &cfg.declared_switches {
-        let j_is_continuous = pair.position_j >= dim
-            || value_kinds[pair.position_j] == ValueKind::Continuous;
-        let k_is_continuous = pair.position_k >= dim
-            || value_kinds[pair.position_k] == ValueKind::Continuous;
-        if !j_is_continuous || !k_is_continuous {
-            eprintln!(
-                "declared switch pair {}:{} must contain continuous ordinary/derived coordinates",
-                pair.position_j + 1,
-                pair.position_k + 1
-            );
-            process::exit(2);
-        }
-    }
-    if cfg.switch_enabled
-        && blocks.iter().any(|block| {
-            block.value_kind == ValueKind::Continuous
-                && block_needs_snapshot_for_rejection(block)
-        })
-        && !posterior.has_cache_snapshot_restore()
-    {
-        eprintln!(
-            "--switch cannot safely stage a joint proposal because the model has a non-reversible cache update but does not export hobbs_cache_snapshot/hobbs_cache_restore"
-        );
-        process::exit(2);
-    }
-
     // Initialize finite-state parameters at their declared lower bounds before
     // deterministic caches are constructed.
     for block in &blocks {
@@ -3557,15 +2485,6 @@ fn run_block_sampler(
         cfg.covariance_mode,
         continuous_positions.clone(),
         cfg.covariance_max_dim,
-        cfg.switch_enabled,
-        cfg.switch_max_dim,
-    );
-    let mut declared_switch_trainer =
-        DeclaredSwitchTrainer::new(cfg.declared_switches.clone());
-    let mut switches = SwitchController::new(
-        cfg.switch_enabled,
-        cfg.switch_threshold,
-        geometry_schedule,
     );
 
     let max_continuous_len = blocks
@@ -3659,23 +2578,6 @@ fn run_block_sampler(
             if posterior.has_cache() { "yes" } else { "no" }
         );
         eprintln!("  covariance adaptation:{}", covariance.name());
-        if cfg.switch_enabled {
-            eprintln!(
-                "  correlation switches: enabled (one-time training {}..{}, |r| > {:.3})",
-                geometry_schedule.collect_start,
-                geometry_schedule.fit_iter,
-                cfg.switch_threshold
-            );
-            eprintln!(
-                "  declared switch pairs:{} (attempt every pair after every scalar sweep)",
-                cfg.declared_switches.len()
-            );
-            eprintln!(
-                "  automatic greedy:     {} (dense limit {})",
-                if covariance.greedy_enabled() { "enabled" } else { "skipped" },
-                cfg.switch_max_dim
-            );
-        }
     }
 
     let start = std::time::Instant::now();
@@ -4050,9 +2952,6 @@ fn run_block_sampler(
 
         if adapting && geometry_schedule.should_collect(iter) {
             covariance.update(&theta);
-            if cfg.switch_enabled {
-                declared_switch_trainer.update(&theta, posterior);
-            }
         }
         if adapting && iter == geometry_schedule.fit_iter {
             if covariance.fit_shapes_once(&mut covariance_shapes) {
@@ -4065,35 +2964,6 @@ fn run_block_sampler(
                     min_scale,
                     max_scale,
                 );
-            }
-            if cfg.switch_enabled {
-                let declared_pairs = declared_switch_trainer.pairs();
-                let greedy_pairs = covariance.switch_pairs(switches.threshold);
-                switches.activate(declared_pairs, greedy_pairs);
-            }
-        }
-
-        if cfg.switch_enabled && switches.active && !switches.pairs.is_empty() {
-            // Every declared pair is a separate invariant MH kernel. Applying
-            // them sequentially permits overlapping cycles such as
-            // beta(1)~u(1,1), ..., beta(1)~u(m,1) without violating Markovness.
-            for pair_index in 0..switches.pairs.len() {
-                let accepted = {
-                    let pair = &switches.pairs[pair_index];
-                    attempt_block_switch(
-                        pair,
-                        &mut theta,
-                        &mut current_logp,
-                        &blocks,
-                        &coordinate_blocks,
-                        posterior,
-                        &mut rng,
-                    )
-                };
-                switches.record(pair_index, accepted, iter <= cfg.burnin);
-                if accepted {
-                    accepted_sweep = true;
-                }
             }
         }
 
@@ -4131,9 +3001,6 @@ fn run_block_sampler(
             geometry_schedule.collect_start,
             geometry_schedule.fit_iter,
         );
-    }
-    if let Some(path) = cfg.switch_diagnostics_out.as_deref() {
-        switches.write_diagnostics(path);
     }
 
     if !cfg.quiet {
@@ -4216,50 +3083,6 @@ fn run_block_sampler(
                 eprintln!("  max |correlation|:    {:.6}", max_correlation);
             }
         }
-        if cfg.switch_enabled {
-            let warmup_attempts: u64 = switches
-                .pairs
-                .iter()
-                .map(|pair| pair.warmup_attempts)
-                .sum();
-            let warmup_accepts: u64 = switches
-                .pairs
-                .iter()
-                .map(|pair| pair.warmup_accepts)
-                .sum();
-            let sampling_attempts: u64 = switches
-                .pairs
-                .iter()
-                .map(|pair| pair.sampling_attempts)
-                .sum();
-            let sampling_accepts: u64 = switches
-                .pairs
-                .iter()
-                .map(|pair| pair.sampling_accepts)
-                .sum();
-            let declared_count = switches
-                .pairs
-                .iter()
-                .filter(|pair| matches!(pair.source, SwitchSource::Declared(_)))
-                .count();
-            let greedy_count = switches.pairs.len() - declared_count;
-            eprintln!(
-                "  frozen switch pairs:  {} ({} declared, {} greedy)",
-                switches.pairs.len(),
-                declared_count,
-                greedy_count
-            );
-            eprintln!(
-                "  warmup switch rate:     {} attempts, {:.4} accepted",
-                warmup_attempts,
-                warmup_accepts as f64 / warmup_attempts.max(1) as f64
-            );
-            eprintln!(
-                "  sampling switch rate:  {} attempts, {:.4} accepted",
-                sampling_attempts,
-                sampling_accepts as f64 / sampling_attempts.max(1) as f64
-            );
-        }
         eprintln!("  seconds:              {:.6}", seconds);
         eprintln!(
             "  sweeps/sec:           {:.0}",
@@ -4304,15 +3127,6 @@ fn run_full_scalar_sampler(
         cfg.covariance_mode,
         positions.clone(),
         cfg.covariance_max_dim,
-        cfg.switch_enabled,
-        cfg.switch_max_dim,
-    );
-    let mut declared_switch_trainer =
-        DeclaredSwitchTrainer::new(cfg.declared_switches.clone());
-    let mut switches = SwitchController::new(
-        cfg.switch_enabled,
-        cfg.switch_threshold,
-        geometry_schedule,
     );
     let mut accepted_total = 0u64;
     let mut saved = 0usize;
@@ -4321,23 +3135,6 @@ fn run_full_scalar_sampler(
         eprintln!("  update mode:          full-target adaptive scalar Metropolis-within-Gibbs");
         eprintln!("  scalar parameters:    {}", dim);
         eprintln!("  covariance adaptation:{}", covariance.name());
-        if cfg.switch_enabled {
-            eprintln!(
-                "  correlation switches: enabled (one-time training {}..{}, |r| > {:.3})",
-                geometry_schedule.collect_start,
-                geometry_schedule.fit_iter,
-                cfg.switch_threshold
-            );
-            eprintln!(
-                "  declared switch pairs:{} (attempt every pair after every scalar sweep)",
-                cfg.declared_switches.len()
-            );
-            eprintln!(
-                "  automatic greedy:     {} (dense limit {})",
-                if covariance.greedy_enabled() { "enabled" } else { "skipped" },
-                cfg.switch_max_dim
-            );
-        }
     }
 
     let start = std::time::Instant::now();
@@ -4396,9 +3193,6 @@ fn run_full_scalar_sampler(
 
         if adapting && geometry_schedule.should_collect(iter) {
             covariance.update(&theta);
-            if cfg.switch_enabled {
-                declared_switch_trainer.update(&theta, posterior);
-            }
         }
         if adapting && iter == geometry_schedule.fit_iter {
             if covariance.fit_shapes_once(&mut covariance_shapes) {
@@ -4411,30 +3205,6 @@ fn run_full_scalar_sampler(
                     min_scale,
                     max_scale,
                 );
-            }
-            if cfg.switch_enabled {
-                let declared_pairs = declared_switch_trainer.pairs();
-                let greedy_pairs = covariance.switch_pairs(switches.threshold);
-                switches.activate(declared_pairs, greedy_pairs);
-            }
-        }
-
-        if cfg.switch_enabled && switches.active && !switches.pairs.is_empty() {
-            for pair_index in 0..switches.pairs.len() {
-                let accepted = {
-                    let pair = &switches.pairs[pair_index];
-                    attempt_full_switch(
-                        pair,
-                        &mut theta,
-                        &mut current_logp,
-                        posterior,
-                        &mut rng,
-                    )
-                };
-                switches.record(pair_index, accepted, iter <= cfg.burnin);
-                if accepted {
-                    accepted_sweep = true;
-                }
             }
         }
 
@@ -4473,9 +3243,6 @@ fn run_full_scalar_sampler(
             geometry_schedule.collect_start,
             geometry_schedule.fit_iter,
         );
-    }
-    if let Some(path) = cfg.switch_diagnostics_out.as_deref() {
-        switches.write_diagnostics(path);
     }
 
     if !cfg.quiet {
@@ -4546,50 +3313,6 @@ fn run_full_scalar_sampler(
                 eprintln!("  max |correlation|:    {:.6}", max_correlation);
             }
         }
-        if cfg.switch_enabled {
-            let warmup_attempts: u64 = switches
-                .pairs
-                .iter()
-                .map(|pair| pair.warmup_attempts)
-                .sum();
-            let warmup_accepts: u64 = switches
-                .pairs
-                .iter()
-                .map(|pair| pair.warmup_accepts)
-                .sum();
-            let sampling_attempts: u64 = switches
-                .pairs
-                .iter()
-                .map(|pair| pair.sampling_attempts)
-                .sum();
-            let sampling_accepts: u64 = switches
-                .pairs
-                .iter()
-                .map(|pair| pair.sampling_accepts)
-                .sum();
-            let declared_count = switches
-                .pairs
-                .iter()
-                .filter(|pair| matches!(pair.source, SwitchSource::Declared(_)))
-                .count();
-            let greedy_count = switches.pairs.len() - declared_count;
-            eprintln!(
-                "  frozen switch pairs:  {} ({} declared, {} greedy)",
-                switches.pairs.len(),
-                declared_count,
-                greedy_count
-            );
-            eprintln!(
-                "  warmup switch rate:     {} attempts, {:.4} accepted",
-                warmup_attempts,
-                warmup_accepts as f64 / warmup_attempts.max(1) as f64
-            );
-            eprintln!(
-                "  sampling switch rate:  {} attempts, {:.4} accepted",
-                sampling_attempts,
-                sampling_accepts as f64 / sampling_attempts.max(1) as f64
-            );
-        }
         eprintln!("  seconds:              {:.6}", seconds);
         eprintln!(
             "  sweeps/sec:           {:.0}",
@@ -4612,7 +3335,6 @@ fn main() {
         &cfg.lib,
         cfg.eval_mode,
         cfg.update_mode == UpdateMode::Block,
-        cfg.switch_derived_count,
     )
     .unwrap_or_else(|e| {
         eprintln!("failed to load posterior: {}", e);
@@ -4648,10 +3370,6 @@ fn main() {
             if posterior.has_cache() { "yes" } else { "no" }
         );
         eprintln!("  active eval mode:     {}", posterior.active_mode_name());
-        eprintln!(
-            "  derived switch coords:{}",
-            posterior.switch_derived_count()
-        );
     }
 
     let theta = vec![0.0; cfg.dim];
@@ -4760,32 +3478,6 @@ mod tests {
     }
 
     #[test]
-    fn centered_switches_are_involutions_for_both_correlation_signs() {
-        for correlation in [-0.95, 0.95] {
-            let pair = SwitchPair::new(
-                0,
-                1,
-                1.25,
-                -0.75,
-                2.0,
-                0.5,
-                correlation,
-                SwitchSource::Greedy,
-            );
-            let original = [3.5, -0.10];
-            let (first_j, first_k) = pair
-                .proposed_values(original[0], original[1])
-                .expect("finite first switch");
-            let switched = [first_j, first_k];
-            let (second_j, second_k) = pair
-                .proposed_values(switched[0], switched[1])
-                .expect("finite second switch");
-            assert!((second_j - original[0]).abs() < 1e-14);
-            assert!((second_k - original[1]).abs() < 1e-14);
-        }
-    }
-
-    #[test]
     fn geometry_schedule_fits_once_at_two_fifths_of_adaptive_warmup() {
         let schedule = GeometrySchedule::new(100);
         assert_eq!(schedule.collect_start, 20);
@@ -4800,124 +3492,6 @@ mod tests {
         assert_eq!(no_adaptation.fit_iter, 0);
         assert!(!no_adaptation.should_collect(0));
         assert!(!no_adaptation.should_collect(1));
-    }
-
-    #[test]
-    fn sparse_declared_trainer_reuses_coordinate_moments_and_recovers_edges() {
-        let specs = vec![
-            DeclaredSwitchSpec {
-                position_j: 0,
-                position_k: 1,
-            },
-            DeclaredSwitchSpec {
-                position_j: 0,
-                position_k: 2,
-            },
-        ];
-        let mut trainer = DeclaredSwitchTrainer::new(specs);
-        assert_eq!(trainer.unique_positions, vec![0, 1, 2]);
-        assert_eq!(trainer.edge_locals, vec![(0, 1), (0, 2)]);
-        for x in -100..=100 {
-            let value = x as f64;
-            trainer.update_values(&[value, 3.0 - 2.0 * value, -4.0 + 0.5 * value]);
-        }
-        let pairs = trainer.pairs();
-        assert_eq!(pairs.len(), 2);
-        assert_eq!(pairs[0].source, SwitchSource::Declared(1));
-        assert_eq!(pairs[1].source, SwitchSource::Declared(2));
-        assert!(pairs[0].center_j.abs() < 1e-14);
-        assert!((pairs[0].center_k - 3.0).abs() < 1e-14);
-        assert!((pairs[0].correlation + 1.0).abs() < 1e-12);
-        assert!((pairs[0].sd_k / pairs[0].sd_j - 2.0).abs() < 1e-12);
-        assert!((pairs[1].center_k + 4.0).abs() < 1e-14);
-        assert!((pairs[1].correlation - 1.0).abs() < 1e-12);
-        assert!((pairs[1].sd_k / pairs[1].sd_j - 0.5).abs() < 1e-12);
-    }
-
-    #[test]
-    fn declared_cycle_order_is_preserved_and_only_exact_greedy_duplicates_are_removed() {
-        let declared = vec![
-            SwitchPair::new(
-                0,
-                1,
-                0.0,
-                0.0,
-                1.0,
-                1.0,
-                -0.9,
-                SwitchSource::Declared(1),
-            ),
-            SwitchPair::new(
-                0,
-                2,
-                0.0,
-                0.0,
-                1.0,
-                1.0,
-                -0.8,
-                SwitchSource::Declared(2),
-            ),
-        ];
-        let greedy = vec![
-            SwitchPair::new(
-                1,
-                0,
-                0.0,
-                0.0,
-                1.0,
-                1.0,
-                -0.95,
-                SwitchSource::Greedy,
-            ),
-            SwitchPair::new(
-                2,
-                3,
-                0.0,
-                0.0,
-                1.0,
-                1.0,
-                0.92,
-                SwitchSource::Greedy,
-            ),
-        ];
-        let pairs = combine_switch_pairs(declared, greedy);
-        assert_eq!(pairs.len(), 3);
-        assert_eq!((pairs[0].position_j, pairs[0].position_k), (0, 1));
-        assert_eq!((pairs[1].position_j, pairs[1].position_k), (0, 2));
-        assert_eq!((pairs[2].position_j, pairs[2].position_k), (2, 3));
-        assert_eq!(pairs[0].source, SwitchSource::Declared(1));
-        assert_eq!(pairs[1].source, SwitchSource::Declared(2));
-        assert_eq!(pairs[2].source, SwitchSource::Greedy);
-    }
-
-    #[test]
-    fn greedy_switch_pairing_selects_strongest_disjoint_correlations() {
-        let positions = [0usize, 1usize, 2usize, 3usize, 4usize];
-        let u = [-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0];
-        let v = [-1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0];
-        let w = [-1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0];
-        let rho_a = -0.98f64;
-        let rho_b = 0.93f64;
-        let mut covariance = WarmupPackedMoments::new(positions.len());
-        for _ in 0..1_000 {
-            for sample in 0..u.len() {
-                let theta = [
-                    u[sample],
-                    rho_a * u[sample] + (1.0 - rho_a * rho_a).sqrt() * v[sample],
-                    v[sample],
-                    rho_b * v[sample] + (1.0 - rho_b * rho_b).sqrt() * w[sample],
-                    w[sample],
-                ];
-                covariance.update(&theta, &positions);
-            }
-        }
-        let pairs = covariance.greedy_switch_pairs(&positions, 0.8);
-        assert_eq!(pairs.len(), 2);
-        assert_eq!((pairs[0].position_j, pairs[0].position_k), (0, 1));
-        assert!(pairs[0].correlation < -0.97);
-        assert_eq!((pairs[1].position_j, pairs[1].position_k), (2, 3));
-        assert!(pairs[1].correlation > 0.92);
-        assert!(pairs.iter().all(|pair| pair.position_j != pair.position_k));
     }
 
     #[test]

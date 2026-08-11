@@ -377,23 +377,13 @@ hobbs_check_sampler <- function(quiet = FALSE) {
 #'   retain their full post-burn-in chain. User model files may also use a
 #'   small convenience syntax for one-based ascending
 #'   loops: `for (i in 1:N)` or `for (i = 1:N)` is translated before C
-#'   compilation to `for (int i = 1; i <= N; ++i)`. When `switch = TRUE`,
-#'   optional top-level declarations can add explicit switch cycles, for
-#'   example `switch { for (i = 1:m) { beta(1) ~ u(i,1) } }`. A named
-#'   derived switch coordinate may also be declared with a getter and an
-#'   immediately attached update, for example `switch mn(1) { ...;
-#'   beta(1) ~ mn(1) } update mn(1) { ... }`. The getter computes the scalar
-#'   from the current parameter state; the update maps
-#'   `proposal(mn(1)) - current(mn(1))` back to the underlying parameters.
-#'   Declared pairs are attempted sequentially after every scalar sweep in
-#'   addition to the automatic greedy pairs.
+#'   compilation to `for (int i = 1; i <= N; ++i)`.
 #' @param data Optional data passed to the C model. May be a path passed to an advanced `posterior_init(const char*)`, or a named R list of numeric/integer/logical scalars, vectors, and matrices. For list data, vector lengths are exposed automatically as `<name>_len`; matrix dimensions are exposed automatically as `<name>_len`, `<name>_nrow`, and `<name>_ncol`. Vectors and matrices also get function-like indexing macros, so `y(i)` and `X(i, j)` in C are 1-based R-style accessors. Discrete parameters may be declared as `dparam z(n, 0, 1)` and are updated by finite enumeration/Gibbs in block mode.
 #' @param dim Optional number of parameters. If omitted, hobbs first uses any `param name(k)` or `param name(n,m)` declarations in the C model, then looks for an explicit scalar in `data` named `dim`, `theta_dim`, `npar`, `n_params`, or `param_dim`.
 #' @param samples Number of post-burn-in samples to save. Default 1000.
 #' @param burnin Number of burn-in iterations. Default 500.
 #' @param warmups Optional alias for `burnin`. When supplied, do not also supply
-#'   `burnin`; scalar adaptation and correlation-switch learning default to this
-#'   many iterations.
+#'   `burnin`; adaptation defaults to this many iterations.
 #' @param adapt_until Last iteration at which to adapt. Default equals the
 #'   effective warmup length (`warmups` when supplied, otherwise `burnin`).
 #' @param out Output path. Default `chain.bin` in `workdir`.
@@ -427,27 +417,6 @@ hobbs_check_sampler <- function(quiet = FALSE) {
 #'   for which `adapt_covariance = "auto"` maintains the complete packed
 #'   variance-covariance matrix. Ignored by explicit `"full"`, `"diagonal"`,
 #'   and `"none"` modes.
-#' @param switch Logical. If `TRUE`, fit switch geometry once during warmup,
-#'   greedily select disjoint strongly correlated continuous pairs, and attempt
-#'   a deterministic centered standardized sign-switch for every frozen pair
-#'   after each scalar sweep. Explicit `switch { ... }` declarations in the
-#'   model are added in source order and may overlap, enabling cycles such as
-#'   `beta(1) ~ u(i,1)` for all `i`. Named derived coordinates declared as
-#'   `switch name(1) { ... } update name(1) { ... }` are trained sparsely with
-#'   their declared partners and may update multiple underlying parameters in
-#'   one joint MH proposal. The user-defined update must be deterministic,
-#'   reversible, and volume preserving; additive mean/sum shifts satisfy this
-#'   contract. Scalar random-walk scales are adapted separately toward
-#'   `target_accept` (0.44 by default).
-#' @param switch_threshold Minimum absolute warmup correlation required for a
-#'   pair. The greedy algorithm selects the strongest remaining pair, removes
-#'   both coordinates, and repeats until this threshold is not exceeded.
-#' @param switch_max_dim Maximum number of continuous coordinates for which a
-#'   complete correlation matrix is fitted for automatic greedy discovery.
-#'   Above this limit, dense greedy discovery is skipped, but user-declared
-#'   `switch { ... }` pairs and named derived-coordinate pairs are still
-#'   trained sparsely and used. Exact dense discovery is quadratic in this
-#'   count.
 #' @param target_accept Target Metropolis acceptance rate. If NULL, defaults to
 #'   0.44 because both update modes make one-dimensional random-walk proposals.
 #' @param seed RNG seed.
@@ -463,15 +432,12 @@ hobbs_check_sampler <- function(quiet = FALSE) {
 #'   lookup values for the mantissa table. The default, 8, uses about 2 KB;
 #'   larger values improve the optional approximation at the cost of cache
 #'   footprint.
-#' @param log_cache_nearest Deprecated. Cached logs now always use direct nearest-table lookup with no interpolation.
 #' @return Invisibly, an `hobbs_run` list containing paths and process status.
 #'   `chain_output` is the full-draw file for unmarked parameters and
 #'   `mean_output` is the one-record binary for declarations marked
 #'   `save=mean`. In block mode, `adaptation` points to per-coordinate proposal
-#'   diagnostics, `adapt_covariance_file` points to the learned
-#'   covariance/correlation diagnostics, `switch_diagnostics` points to the
-#'   frozen pair definitions and switch acceptance rates when `switch = TRUE`,
-#'   and `switch_declared_pairs` records expanded model-level switch cycles.
+#'   diagnostics, and `adapt_covariance_file` points to the learned
+#'   covariance/correlation diagnostics.
 #' @export
 hobbs <- function(model,
                     dim = NULL,
@@ -501,11 +467,7 @@ hobbs <- function(model,
                     cflags = NULL,
                     log_cache = FALSE,
                     log_cache_bits = 8L,
-                    log_cache_nearest = FALSE,
-                    warmups = NULL,
-                    switch = FALSE,
-                    switch_threshold = 0.8,
-                    switch_max_dim = adapt_covariance_max_dim) {
+                    warmups = NULL) {
   eval <- match.arg(eval)
   format <- match.arg(format)
   save <- match.arg(save)
@@ -558,26 +520,7 @@ hobbs <- function(model,
     "adapt_covariance_max_dim",
     1L
   )
-  if (!is.logical(switch) || length(switch) != 1L || is.na(switch)) {
-    stop("`switch` must be TRUE or FALSE.", call. = FALSE)
-  }
-  if (!is.numeric(switch_threshold) || length(switch_threshold) != 1L ||
-      !is.finite(switch_threshold) || switch_threshold <= 0 ||
-      switch_threshold >= 1) {
-    stop("`switch_threshold` must be a number strictly between 0 and 1.",
-         call. = FALSE)
-  }
-  switch_max_dim <- count_arg(switch_max_dim, "switch_max_dim", 1L)
-  if (isTRUE(switch) && adapt_until < 20L) {
-    stop("`switch = TRUE` requires at least 20 adaptive warmup sweeps; increase `warmups` or `adapt_until`.",
-         call. = FALSE)
-  }
-  if (isTRUE(switch) && adapt_until > burnin) {
-    stop("With `switch = TRUE`, `adapt_until` must be no greater than the warmup/burn-in length so the learned pairs freeze before retained sampling.",
-         call. = FALSE)
-  }
-
-  log_cache_config <- validate_log_cache(log_cache, log_cache_bits, log_cache_nearest)
+  log_cache_config <- validate_log_cache(log_cache, log_cache_bits)
 
   dir.create(workdir, recursive = TRUE, showWarnings = FALSE)
   workdir <- normalizePath(workdir, mustWork = TRUE)
@@ -589,17 +532,7 @@ hobbs <- function(model,
   model_user_c <- inline_func_declarations(model_user_c, workdir)
   data <- add_implicit_data_dimensions(data)
   param_info <- parse_param_declarations(model_user_c, data = data)
-  switch_info <- extract_switch_declarations(
-    model_user_c,
-    param_info = param_info,
-    data = data,
-    workdir = workdir
-  )
-  if (nrow(switch_info$pairs) && !isTRUE(switch)) {
-    stop("The model contains `switch { ... }` declarations; call `hobbs(..., switch = TRUE)` to use them.",
-         call. = FALSE)
-  }
-  model_runtime_c <- switch_info$model_c
+  model_runtime_c <- model_user_c
   block_info <- parse_block_declarations(model_runtime_c)
   dim <- resolve_dim(dim, data, param_info = param_info)
   output_plan <- resolve_parameter_output_plan(param_info, dim, global_save = save)
@@ -624,7 +557,6 @@ hobbs <- function(model,
     data_spec = data_info$spec,
     param_info = param_info,
     block_info = block_info,
-    switch_derived = switch_info$derived,
     allow_block_only = identical(update, "block")
   )
   lib <- compile_c_model(model_c, workdir = workdir, compiler = compiler, cflags = cflags,
@@ -642,19 +574,6 @@ hobbs <- function(model,
     }
     c("--block", spec)
   }), use.names = FALSE)
-  switch_pairs_file <- NA_character_
-  switch_pair_cli_args <- if (isTRUE(switch) && nrow(switch_info$pairs)) {
-    switch_pairs_file <- tempfile(
-      "hobbs_switch_pairs_", tmpdir = workdir, fileext = ".txt"
-    )
-    writeLines(
-      paste(switch_info$pairs$position_j, switch_info$pairs$position_k, sep = ":"),
-      switch_pairs_file
-    )
-    c("--switch-pairs-file", switch_pairs_file)
-  } else {
-    character()
-  }
   mean_range_cli_args <- if (identical(save, "chain") && output_plan$declaration_means) {
     unlist(lapply(output_plan$mean_ranges, function(item) {
       c("--mean-range", paste(item$offset, item$len, sep = ":"))
@@ -680,11 +599,6 @@ hobbs <- function(model,
     "--adapt-every", adapt_every,
     "--adapt-covariance", adapt_covariance,
     "--adapt-covariance-max-dim", adapt_covariance_max_dim,
-    if (isTRUE(switch)) "--switch",
-    switch_pair_cli_args,
-    "--switch-derived-count", as.integer(switch_info$derived_count %||% 0L),
-    "--switch-threshold", format_num(switch_threshold),
-    "--switch-max-dim", switch_max_dim,
     "--target-accept", format_num(target_accept),
     "--seed", seed_arg,
     "--thin", thin
@@ -692,7 +606,6 @@ hobbs <- function(model,
 
   adaptation_path <- NA_character_
   adapt_covariance_path <- NA_character_
-  switch_diagnostics_path <- NA_character_
   mean_output_path <- NA_character_
   chain_output_path <- NA_character_
   declaration_means <- identical(save, "chain") && isTRUE(output_plan$declaration_means)
@@ -730,10 +643,6 @@ hobbs <- function(model,
         "--adapt-cov-out", adapt_covariance_path
       )
     }
-    if (isTRUE(switch)) {
-      switch_diagnostics_path <- paste0(out_path, ".switch.csv")
-      args <- c(args, "--switch-diagnostics-out", switch_diagnostics_path)
-    }
   }
 
   stdout <- if (quiet) FALSE else ""
@@ -760,11 +669,6 @@ hobbs <- function(model,
       stop("hobbs sampler did not create covariance diagnostics: ",
            adapt_covariance_path, call. = FALSE)
     }
-  }
-  if (!isTRUE(no_output) && isTRUE(switch) &&
-      !file.exists(switch_diagnostics_path)) {
-    stop("hobbs sampler did not create switch diagnostics: ",
-         switch_diagnostics_path, call. = FALSE)
   }
 
   parameter_save <- if (length(param_info$spec)) {
@@ -820,14 +724,6 @@ hobbs <- function(model,
       adapt_covariance_max_dim = adapt_covariance_max_dim,
       adaptation = adaptation_path,
       adapt_covariance_file = adapt_covariance_path,
-      switch = isTRUE(switch),
-      switch_threshold = switch_threshold,
-      switch_max_dim = switch_max_dim,
-      switch_diagnostics = switch_diagnostics_path,
-      switch_declared_pairs = switch_info$pairs,
-      switch_derived = switch_info$derived,
-      switch_derived_count = switch_info$derived_count,
-      switch_pairs_file = switch_pairs_file,
       target_accept = target_accept,
       step = step,
       seed = seed_arg,
@@ -891,14 +787,6 @@ hobbs <- function(model,
     adapt_covariance_max_dim = adapt_covariance_max_dim,
     adaptation = adaptation_path,
     adapt_covariance_file = adapt_covariance_path,
-    switch = isTRUE(switch),
-    switch_threshold = switch_threshold,
-    switch_max_dim = switch_max_dim,
-    switch_diagnostics = switch_diagnostics_path,
-    switch_declared_pairs = switch_info$pairs,
-    switch_derived = switch_info$derived,
-    switch_derived_count = switch_info$derived_count,
-    switch_pairs_file = switch_pairs_file,
     target_accept = target_accept,
     step = step,
     seed = seed_arg,
@@ -2749,454 +2637,6 @@ resolve_param_extent <- function(x, data = NULL, context = "param declaration") 
   as.integer(round(val))
 }
 
-switch_eval_environment <- function(data = NULL, bindings = list()) {
-  env <- new.env(parent = baseenv())
-  if (is.list(data) && length(data) && !is.null(names(data))) {
-    for (nm in names(data)) {
-      value <- data[[nm]]
-      if ((is.numeric(value) || is.integer(value) || is.logical(value)) &&
-          length(value) == 1L && !is.na(value) && is.finite(as.numeric(value))) {
-        assign(nm, value, envir = env)
-      }
-    }
-  }
-  if (length(bindings)) {
-    for (nm in names(bindings)) assign(nm, bindings[[nm]], envir = env)
-  }
-  env
-}
-
-switch_integer_value <- function(expr, data = NULL, bindings = list(), context = "switch declaration") {
-  value <- tryCatch(
-    eval(expr, envir = switch_eval_environment(data, bindings)),
-    error = function(e) stop("Could not evaluate `", paste(deparse(expr), collapse = ""),
-                             "` in ", context, ": ", conditionMessage(e), call. = FALSE)
-  )
-  if (!is.numeric(value) || length(value) != 1L || is.na(value) || !is.finite(value) ||
-      abs(value - round(value)) > .Machine$double.eps^0.5) {
-    stop("Switch index `", paste(deparse(expr), collapse = ""),
-         "` must evaluate to one finite integer.", call. = FALSE)
-  }
-  as.integer(round(value))
-}
-
-resolve_switch_parameter_reference <- function(expr, param_info, data = NULL,
-                                               bindings = list()) {
-  if (!is.call(expr) || length(expr) < 2L) {
-    stop("Each side of a switch must be a parameter element such as `beta(1)` or `u(i,1)`.",
-         call. = FALSE)
-  }
-  nm <- as.character(expr[[1L]])
-  specs <- param_info$spec %||% list()
-  pmap <- setNames(specs, vapply(specs, `[[`, character(1), "name"))
-  info <- pmap[[nm]]
-  if (is.null(info)) return(NULL)
-  if (!identical(info$value_type %||% "continuous", "continuous")) {
-    stop("Switch declarations require continuous parameters; `", nm, "` is discrete.",
-         call. = FALSE)
-  }
-  indices <- lapply(as.list(expr)[-1L], switch_integer_value,
-                    data = data, bindings = bindings,
-                    context = paste0("switch reference `", paste(deparse(expr), collapse = ""), "`"))
-  indices <- as.integer(unlist(indices, use.names = FALSE))
-  nr <- as.integer(info$nrow)
-  nc <- as.integer(info$ncol)
-  if (nc == 1L) {
-    if (length(indices) != 1L || indices[[1L]] < 1L || indices[[1L]] > nr) {
-      stop("Switch reference `", paste(deparse(expr), collapse = ""),
-           "` must use one index from 1 to ", nr, ".", call. = FALSE)
-    }
-    local <- indices[[1L]] - 1L
-  } else {
-    if (length(indices) != 2L || indices[[1L]] < 1L || indices[[1L]] > nr ||
-        indices[[2L]] < 1L || indices[[2L]] > nc) {
-      stop("Switch reference `", paste(deparse(expr), collapse = ""),
-           "` must use row 1..", nr, " and column 1..", nc, ".", call. = FALSE)
-    }
-    local <- (indices[[1L]] - 1L) + (indices[[2L]] - 1L) * nr
-  }
-  list(
-    position = as.integer(info$offset + local),
-    label = info$names[[local + 1L]],
-    parameter = nm,
-    derived = FALSE
-  )
-}
-
-resolve_switch_derived_reference <- function(expr, derived_specs, data = NULL,
-                                             bindings = list()) {
-  if (!is.call(expr) || length(expr) < 2L || !length(derived_specs)) return(NULL)
-  nm <- as.character(expr[[1L]])
-  dmap <- setNames(derived_specs, vapply(derived_specs, `[[`, character(1), "name"))
-  info <- dmap[[nm]]
-  if (is.null(info)) return(NULL)
-  indices <- lapply(as.list(expr)[-1L], switch_integer_value,
-                    data = data, bindings = bindings,
-                    context = paste0("derived switch reference `", paste(deparse(expr), collapse = ""), "`"))
-  indices <- as.integer(unlist(indices, use.names = FALSE))
-  if (length(indices) != 1L || indices[[1L]] != 1L) {
-    stop("Derived switch coordinate `", nm,
-         "` is currently scalar and must be referenced as `", nm, "(1)`.",
-         call. = FALSE)
-  }
-  list(
-    position = as.integer(info$position),
-    label = paste0(nm, "[1]"),
-    parameter = nm,
-    derived = TRUE
-  )
-}
-
-resolve_switch_reference <- function(expr, param_info, derived_specs = list(),
-                                     data = NULL, bindings = list()) {
-  ordinary <- resolve_switch_parameter_reference(expr, param_info, data, bindings)
-  if (!is.null(ordinary)) return(ordinary)
-  derived <- resolve_switch_derived_reference(expr, derived_specs, data, bindings)
-  if (!is.null(derived)) return(derived)
-  nm <- if (is.call(expr) && length(expr)) as.character(expr[[1L]]) else paste(deparse(expr), collapse = "")
-  stop("Unknown parameter or derived switch coordinate `", nm,
-       "` in switch declaration.", call. = FALSE)
-}
-
-walk_switch_expression <- function(expr, param_info, data = NULL, bindings = list(),
-                                   derived_specs = list()) {
-  if (is.expression(expr)) {
-    return(unlist(lapply(as.list(expr), walk_switch_expression,
-                         param_info = param_info, data = data, bindings = bindings,
-                         derived_specs = derived_specs),
-                  recursive = FALSE))
-  }
-  if (is.null(expr)) return(list())
-  if (!is.call(expr)) {
-    stop("Unsupported item in switch declaration: `", paste(deparse(expr), collapse = ""), "`.",
-         call. = FALSE)
-  }
-  op <- as.character(expr[[1L]])
-  if (identical(op, "{")) {
-    if (length(expr) <= 1L) return(list())
-    return(unlist(lapply(as.list(expr)[-1L], walk_switch_expression,
-                         param_info = param_info, data = data, bindings = bindings,
-                         derived_specs = derived_specs),
-                  recursive = FALSE))
-  }
-  if (identical(op, "(")) {
-    return(walk_switch_expression(expr[[2L]], param_info, data, bindings,
-                                  derived_specs = derived_specs))
-  }
-  if (identical(op, "for")) {
-    variable <- as.character(expr[[2L]])
-    values <- tryCatch(
-      eval(expr[[3L]], envir = switch_eval_environment(data, bindings)),
-      error = function(e) stop("Could not evaluate switch loop `",
-                               paste(deparse(expr[[3L]]), collapse = ""), "`: ",
-                               conditionMessage(e), call. = FALSE)
-    )
-    if (!is.numeric(values) || !length(values) || anyNA(values) || any(!is.finite(values)) ||
-        any(abs(values - round(values)) > .Machine$double.eps^0.5)) {
-      stop("Switch loop values must be a non-empty finite integer sequence.", call. = FALSE)
-    }
-    out <- list()
-    for (value in as.integer(round(values))) {
-      next_bindings <- bindings
-      next_bindings[[variable]] <- value
-      out <- c(out, walk_switch_expression(expr[[4L]], param_info, data, next_bindings,
-                                           derived_specs = derived_specs))
-    }
-    return(out)
-  }
-  if (identical(op, "~")) {
-    if (length(expr) != 3L) stop("A switch statement must have exactly two sides.", call. = FALSE)
-    left <- resolve_switch_reference(expr[[2L]], param_info, derived_specs, data, bindings)
-    right <- resolve_switch_reference(expr[[3L]], param_info, derived_specs, data, bindings)
-    if (left$position == right$position) {
-      stop("A switch cannot pair `", left$label, "` with itself.", call. = FALSE)
-    }
-    return(list(list(
-      position_j = left$position,
-      position_k = right$position,
-      parameter_j = left$parameter,
-      parameter_k = right$parameter,
-      label_j = left$label,
-      label_k = right$label,
-      derived_j = isTRUE(left$derived),
-      derived_k = isTRUE(right$derived)
-    )))
-  }
-  stop("Unsupported switch syntax `", paste(deparse(expr), collapse = ""),
-       "`. Use parameter pairs and `for` loops only.", call. = FALSE)
-}
-
-normalize_switch_for_syntax <- function(body) {
-  gsub(
-    "for[[:space:]]*\\([[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*([^)]*)\\)",
-    "for (\\1 in \\2)", body, perl = TRUE
-  )
-}
-
-parse_switch_block_text <- function(text, param_info, data = NULL,
-                                    derived_specs = list()) {
-  open <- regexpr("{", text, fixed = TRUE)[[1L]]
-  closes <- gregexpr("}", text, fixed = TRUE)[[1L]]
-  close <- if (length(closes) && closes[[1L]] > 0L) tail(closes, 1L) else -1L
-  if (open < 1L || close <= open) stop("Invalid switch declaration.", call. = FALSE)
-  body <- substr(text, open + 1L, close - 1L)
-  body <- gsub("(?s)/\\*.*?\\*/", "", body, perl = TRUE)
-  body <- paste(sub("//.*$", "", strsplit(body, "\n", fixed = TRUE)[[1L]], perl = TRUE),
-                collapse = "\n")
-  body <- normalize_switch_for_syntax(body)
-  parsed <- tryCatch(parse(text = body, keep.source = FALSE),
-                     error = function(e) stop("Could not parse switch declaration: ",
-                                              conditionMessage(e), call. = FALSE))
-  walk_switch_expression(parsed, param_info = param_info, data = data,
-                         derived_specs = derived_specs)
-}
-
-parse_named_switch_header <- function(line, data = NULL) {
-  pat <- "^[[:space:]]*switch[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*\\([[:space:]]*([A-Za-z_][A-Za-z0-9_]*|[0-9]+)[[:space:]]*\\)[[:space:]]*\\{"
-  m <- regexec(pat, line, perl = TRUE)
-  hit <- regmatches(line, m)[[1L]]
-  if (length(hit) != 3L) return(NULL)
-  extent <- resolve_param_extent(hit[[3L]], data = data,
-                                 context = paste0("derived switch declaration `", trimws(line), "`"))
-  if (extent != 1L) {
-    stop("Derived switch coordinates are currently scalar. Declare `switch ",
-         hit[[2L]], "(1) { ... }`.", call. = FALSE)
-  }
-  list(name = hit[[2L]], extent = extent)
-}
-
-parse_named_switch_pairs <- function(body_lines, param_info, derived_specs,
-                                     data = NULL) {
-  pairs <- list()
-  computation <- character()
-  for (line in body_lines) {
-    uncommented <- trimws(sub("//.*$", "", line, perl = TRUE))
-    if (grepl("~", uncommented, fixed = TRUE)) {
-      statement <- sub(";[[:space:]]*$", "", uncommented, perl = TRUE)
-      parsed <- tryCatch(parse(text = statement, keep.source = FALSE),
-                         error = function(e) stop("Could not parse derived switch pair `",
-                                                  uncommented, "`: ", conditionMessage(e),
-                                                  call. = FALSE))
-      pairs <- c(pairs, walk_switch_expression(
-        parsed, param_info = param_info, data = data,
-        derived_specs = derived_specs
-      ))
-    } else {
-      computation <- c(computation, line)
-    }
-  }
-  list(pairs = pairs, computation = computation)
-}
-
-replace_switch_derived_reference <- function(lines, name, replacement) {
-  if (!length(lines)) return(lines)
-  pat_any <- paste0("\\b", name, "[[:space:]]*\\([[:space:]]*([^)]*)[[:space:]]*\\)")
-  for (line in lines) {
-    hits <- gregexpr(pat_any, line, perl = TRUE)[[1L]]
-    if (length(hits) && hits[[1L]] > 0L) {
-      matched <- regmatches(line, list(hits))[[1L]]
-      for (value in matched) {
-        idx <- sub(paste0("^.*\\([[:space:]]*([^)]*)[[:space:]]*\\)$"), "\\1", value, perl = TRUE)
-        if (!identical(trimws(idx), "1")) {
-          stop("Derived switch coordinate `", name,
-               "` is scalar and must be referenced as `", name, "(1)`.",
-               call. = FALSE)
-        }
-      }
-    }
-  }
-  gsub(paste0("\\b", name, "[[:space:]]*\\([[:space:]]*1[[:space:]]*\\)"),
-       replacement, lines, perl = TRUE)
-}
-
-generate_switch_derived_c <- function(derived_specs, param_info, theta_name) {
-  if (is.null(derived_specs) || !length(derived_specs)) return(character())
-  out <- c("", "/* generated by hobbs from named derived switch coordinates */")
-  for (item in derived_specs) {
-    index <- as.integer(item$id)
-    nm <- item$name
-    getter_body <- replace_switch_derived_reference(
-      item$value_body, nm, "hobbs_switch_derived_value"
-    )
-    update_body <- item$update_body
-    prop_pat <- paste0("proposal[[:space:]]*\\([[:space:]]*", nm,
-                       "[[:space:]]*\\([[:space:]]*1[[:space:]]*\\)[[:space:]]*\\)")
-    cur_pat <- paste0("current[[:space:]]*\\([[:space:]]*", nm,
-                      "[[:space:]]*\\([[:space:]]*1[[:space:]]*\\)[[:space:]]*\\)")
-    update_body <- gsub(prop_pat, "hobbs_switch_proposed_value", update_body, perl = TRUE)
-    update_body <- gsub(cur_pat, "hobbs_switch_current_value", update_body, perl = TRUE)
-    update_body <- replace_switch_derived_reference(
-      update_body, nm, "hobbs_switch_current_value"
-    )
-    if (any(grepl("\\b(?:proposal|current)[[:space:]]*\\(", update_body, perl = TRUE))) {
-      stop("The update attached to derived switch `", nm,
-           "` may use `proposal(", nm, "(1))` and `current(", nm,
-           "(1))`; other proposal/current references are not supported.",
-           call. = FALSE)
-    }
-    out <- c(
-      out,
-      sprintf("hobbs_EXPORT double hobbs_switch_value_%d(const double *%s, int hobbs_switch_dim) {", index, theta_name),
-      sprintf("  (void)%s; (void)hobbs_switch_dim;", theta_name),
-      "  double hobbs_switch_derived_value = 0.0;",
-      paste0("  ", getter_body),
-      "  return hobbs_switch_derived_value;",
-      "}",
-      "",
-      sprintf("hobbs_EXPORT int hobbs_switch_apply_%d(double *%s, int hobbs_switch_dim, double hobbs_switch_current_value, double hobbs_switch_proposed_value) {", index, theta_name),
-      sprintf("  (void)%s; (void)hobbs_switch_dim; (void)hobbs_switch_current_value; (void)hobbs_switch_proposed_value;", theta_name),
-      paste0("  ", update_body),
-      "  return 0;",
-      "}",
-      ""
-    )
-  }
-  out
-}
-
-empty_switch_pair_table <- function() {
-  data.frame(
-    declaration = integer(), position_j = integer(), position_k = integer(),
-    parameter_j = character(), parameter_k = character(),
-    label_j = character(), label_k = character(),
-    derived_j = logical(), derived_k = logical(),
-    stringsAsFactors = FALSE
-  )
-}
-
-extract_switch_declarations <- function(model_c, param_info, data = NULL, workdir = tempdir()) {
-  src <- normalize_attached_cache_syntax(readLines(model_c, warn = FALSE))
-  cleaned <- character()
-  pairs <- list()
-  derived_specs <- list()
-  i <- 1L
-  anonymous_pattern <- "^[[:space:]]*switch[[:space:]]*\\{"
-  update_pattern <- "^[[:space:]]*update[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*\\([[:space:]]*([A-Za-z_][A-Za-z0-9_]*|[0-9]+)[[:space:]]*\\)[[:space:]]*\\{"
-
-  while (i <= length(src)) {
-    named <- parse_named_switch_header(src[[i]], data = data)
-    if (!is.null(named)) {
-      parameter_names <- vapply(param_info$spec %||% list(), `[[`, character(1), "name")
-      if (named$name %in% parameter_names) {
-        stop("Derived switch coordinate `", named$name,
-             "` cannot reuse an ordinary parameter name.", call. = FALSE)
-      }
-      if (named$name %in% vapply(derived_specs, `[[`, character(1), "name")) {
-        stop("Duplicate derived switch coordinate `", named$name, "`.", call. = FALSE)
-      }
-      declaration <- collect_braced_declaration(src, i, paste0("switch ", named$name))
-      value_body <- extract_func_body_lines(declaration$lines)
-      i <- declaration$next_i
-      if (i > length(src)) {
-        stop("Derived switch `", named$name,
-             "` requires an attached `update ", named$name, "(1) { ... }` block.",
-             call. = FALSE)
-      }
-      mu <- regexec(update_pattern, src[[i]], perl = TRUE)
-      hu <- regmatches(src[[i]], mu)[[1L]]
-      if (length(hu) != 3L || !identical(hu[[2L]], named$name)) {
-        stop("Derived switch `", named$name,
-             "` requires an immediately attached `update ", named$name,
-             "(1) { ... }` block that maps its proposed value back to the underlying parameters.",
-             call. = FALSE)
-      }
-      update_extent <- resolve_param_extent(
-        hu[[3L]], data = data,
-        context = paste0("update declaration for derived switch `", named$name, "`")
-      )
-      if (update_extent != 1L) {
-        stop("The update attached to derived switch `", named$name,
-             "` must be declared as `update ", named$name, "(1) { ... }`.",
-             call. = FALSE)
-      }
-      update_decl <- collect_braced_declaration(src, i, paste0("update ", named$name))
-      update_body <- extract_func_body_lines(update_decl$lines)
-      i <- update_decl$next_i
-
-      id <- length(derived_specs)
-      spec <- list(
-        id = as.integer(id),
-        name = named$name,
-        extent = 1L,
-        position = as.integer(param_info$dim + id),
-        value_body = character(),
-        update_body = update_body
-      )
-      visible_specs <- c(derived_specs, list(spec))
-      separated <- parse_named_switch_pairs(
-        value_body, param_info = param_info,
-        derived_specs = visible_specs, data = data
-      )
-      spec$value_body <- separated$computation
-      if (!length(separated$pairs)) {
-        stop("Derived switch `", named$name,
-             "` must contain at least one pair such as `beta(1) ~ ",
-             named$name, "(1)`.", call. = FALSE)
-      }
-      if (!all(vapply(separated$pairs, function(pair) {
-        identical(pair$position_j, spec$position) || identical(pair$position_k, spec$position)
-      }, logical(1)))) {
-        stop("Every pair inside `switch ", named$name,
-             "(1) { ... }` must involve `", named$name, "(1)`.", call. = FALSE)
-      }
-      derived_specs[[length(derived_specs) + 1L]] <- spec
-      pairs <- c(pairs, separated$pairs)
-      next
-    }
-
-    if (grepl(anonymous_pattern, src[[i]], perl = TRUE)) {
-      declaration <- collect_braced_declaration(src, i, "switch")
-      text <- paste(declaration$lines, collapse = "\n")
-      pairs <- c(pairs, parse_switch_block_text(
-        text, param_info, data, derived_specs = derived_specs
-      ))
-      i <- declaration$next_i
-      next
-    }
-
-    if (grepl("^[[:space:]]*switch\\b", src[[i]], perl = TRUE)) {
-      stop("Invalid switch declaration. Use `switch { ... }` for ordinary pairs or `switch name(1) { ... } update name(1) { ... }` for a derived coordinate.",
-           call. = FALSE)
-    }
-
-    cleaned <- c(cleaned, src[[i]])
-    i <- i + 1L
-  }
-
-  if (length(pairs)) {
-    keys <- vapply(pairs, function(item) {
-      paste(sort(c(item$position_j, item$position_k)), collapse = ":")
-    }, character(1))
-    pairs <- pairs[!duplicated(keys)]
-    for (index in seq_along(pairs)) pairs[[index]]$declaration <- index
-  }
-
-  cleaned_path <- tempfile("hobbs_model_without_switch_", tmpdir = workdir, fileext = ".c")
-  writeLines(cleaned, cleaned_path)
-  pair_table <- if (length(pairs)) {
-    data.frame(
-      declaration = vapply(pairs, `[[`, integer(1), "declaration"),
-      position_j = vapply(pairs, `[[`, integer(1), "position_j"),
-      position_k = vapply(pairs, `[[`, integer(1), "position_k"),
-      parameter_j = vapply(pairs, `[[`, character(1), "parameter_j"),
-      parameter_k = vapply(pairs, `[[`, character(1), "parameter_k"),
-      label_j = vapply(pairs, `[[`, character(1), "label_j"),
-      label_k = vapply(pairs, `[[`, character(1), "label_k"),
-      derived_j = vapply(pairs, `[[`, logical(1), "derived_j"),
-      derived_k = vapply(pairs, `[[`, logical(1), "derived_k"),
-      stringsAsFactors = FALSE
-    )
-  } else {
-    empty_switch_pair_table()
-  }
-  list(
-    model_c = cleaned_path,
-    pairs = pair_table,
-    derived = derived_specs,
-    derived_count = as.integer(length(derived_specs))
-  )
-}
-
 strip_param_declarations <- function(src) {
   pat <- paste0(
     "^[[:space:]]*(?:param|dparam)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*",
@@ -3253,7 +2693,7 @@ generate_param_macros <- function(param_info, theta_name) {
   c(out, "")
 }
 
-translate_user_model_c <- function(model_c, workdir, param_info = NULL, block_info = NULL, switch_derived = NULL) {
+translate_user_model_c <- function(model_c, workdir, param_info = NULL, block_info = NULL) {
   src <- readLines(model_c, warn = FALSE)
   src <- normalize_attached_cache_syntax(src)
   src <- expand_multi_block_declarations(src)
@@ -3266,8 +2706,7 @@ translate_user_model_c <- function(model_c, workdir, param_info = NULL, block_in
   if (is.null(theta_name) || !nzchar(theta_name)) theta_name <- "theta"
   macros <- generate_param_macros(param_info, theta_name)
   cache_c <- generate_cache_c(extracted_cache$caches, param_info, theta_name)
-  switch_c <- generate_switch_derived_c(switch_derived, param_info, theta_name)
-  translated <- c(macros, cache_c, translated, switch_c)
+  translated <- c(macros, cache_c, translated)
   translated <- translate_block_signatures(translated, theta_name, param_info = param_info)
   translated <- translate_distribution_statements(translated)
   translated <- translate_vec_declarations(translated)
@@ -3783,8 +3222,8 @@ find_top_level_colon <- function(x) {
   NA_integer_
 }
 
-prepare_model_translation_unit <- function(model_c, workdir, log_cache = FALSE, data_spec = NULL, param_info = NULL, block_info = NULL, switch_derived = NULL, allow_block_only = FALSE) {
-  model_c <- translate_user_model_c(model_c, workdir, param_info = param_info, block_info = block_info, switch_derived = switch_derived)
+prepare_model_translation_unit <- function(model_c, workdir, log_cache = FALSE, data_spec = NULL, param_info = NULL, block_info = NULL, allow_block_only = FALSE) {
+  model_c <- translate_user_model_c(model_c, workdir, param_info = param_info, block_info = block_info)
   src <- readLines(model_c, warn = FALSE)
   has_posterior_logp <- any(grepl("\\bposterior_logp\\s*\\(", src))
   has_log_posterior <- any(grepl("\\blog_posterior\\s*\\(", src))
@@ -3885,23 +3324,20 @@ compile_c_model <- function(model_c, workdir, compiler = NULL, cflags = NULL, qu
 }
 
 
-validate_log_cache <- function(log_cache, log_cache_bits, log_cache_nearest) {
+validate_log_cache <- function(log_cache, log_cache_bits) {
   enabled <- isTRUE(log_cache)
   if (is.list(log_cache)) {
     enabled <- isTRUE(log_cache$enabled %||% TRUE)
     log_cache_bits <- log_cache$bits %||% log_cache_bits
-    log_cache_nearest <- log_cache$nearest %||% log_cache_nearest
   }
 
   bits <- as.integer(log_cache_bits)
   if (length(bits) != 1L || is.na(bits) || bits < 8L || bits > 28L) {
     stop("`log_cache_bits` must be a single integer from 8 to 28.", call. = FALSE)
   }
-  nearest <- TRUE
   list(
     enabled = enabled,
     bits = bits,
-    nearest = nearest,
     entries = 2^bits,
     approximate = enabled
   )
@@ -3966,13 +3402,6 @@ print.hobbs_run <- function(x, ...) {
   cat("  samples:     ", x$samples, "\n", sep = "")
   cat("  warmups:     ", x$warmups %||% x$burnin, "\n", sep = "")
   cat("  adapt_until: ", x$adapt_until, "\n", sep = "")
-  cat("  switch:      ", isTRUE(x$switch), "\n", sep = "")
-  if (!is.null(x$switch_declared_pairs) && nrow(x$switch_declared_pairs)) {
-    cat("  declared:    ", nrow(x$switch_declared_pairs), " switch pairs\n", sep = "")
-  }
-  if (!is.null(x$switch_derived_count) && x$switch_derived_count > 0L) {
-    cat("  derived:     ", x$switch_derived_count, " switch coordinates\n", sep = "")
-  }
   cat("  eval:        ", x$eval, "\n", sep = "")
   cat("  save:        ", x$save %||% "chain", "\n", sep = "")
   if (!is.null(x$adaptation) && !is.na(x$adaptation)) {
@@ -3980,9 +3409,6 @@ print.hobbs_run <- function(x, ...) {
   }
   if (!is.null(x$adapt_covariance_file) && !is.na(x$adapt_covariance_file)) {
     cat("  covariance:  ", x$adapt_covariance_file, "\n", sep = "")
-  }
-  if (!is.null(x$switch_diagnostics) && !is.na(x$switch_diagnostics)) {
-    cat("  switches:    ", x$switch_diagnostics, "\n", sep = "")
   }
   invisible(x)
 }
