@@ -22,7 +22,7 @@
 // Headerless files are supported when dim is supplied.
 
 static const unsigned char hobbs_MAGIC_16[16] = {
-    'X','M','C','M','C','_','B','I','N','_','V','1','\0','\0','\0','\0'
+    'h','o','b','b','s','_','B','I','N','_','V','1','\0','\0','\0','\0'
 };
 
 static const unsigned char FASTAMH_MAGIC_16[16] = {
