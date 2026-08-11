@@ -33,8 +33,8 @@ sudo apt install build-essential
 Install the development version from GitHub:
 
 ```r
-install.packages("remotes")
-remotes::install_github("hobbs/hobbs")
+install.packages("pak")
+pak::install_github("hobbs-dev/hobbs")
 ```
 
 Once the package is installed, check your compiler toolchain, build the sampler, and check the sampler:
