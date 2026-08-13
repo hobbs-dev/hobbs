@@ -1,4 +1,4 @@
-# hobbs (roughly, High dimensiOnal Bayesian Sampler)
+# hobbs (High dimensiOnal Bayesian omniBus Sampler)
 
 ### R package for high dimensional Bayesian data analysis
 
