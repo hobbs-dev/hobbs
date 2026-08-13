@@ -1,7 +1,7 @@
 Package: hobbs
 Type: Package
 Title: High Dimensional Bayesian Data Analysis
-Version: 0.3.4
+Version: 0.3.6
 Authors@R: person("Mike", "Kleinsasser", email = "mkleinsa@umich.edu", 
     role = c("aut", "cre"))
 Description: Enables high dimensional statistical modeling using Bayesian 

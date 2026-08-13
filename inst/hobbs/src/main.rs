@@ -58,7 +58,6 @@ type ContinuousAdaptiveSweepFn = unsafe extern "C" fn(
     *mut f64,
     *const f64,
     *const f64,
-    *const f64,
     *mut u64,
     *mut u64,
     c_int,
@@ -69,6 +68,15 @@ type ContinuousAdaptiveSweepFn = unsafe extern "C" fn(
     f64,
     f64,
     f64,
+    *mut u64,
+    *mut c_int,
+) -> f64;
+type ContinuousProductionSweepFn = unsafe extern "C" fn(
+    *mut f64,
+    *const f64,
+    *const f64,
+    *const f64,
+    *mut u64,
     *mut u64,
     *mut c_int,
 ) -> f64;
@@ -143,21 +151,6 @@ enum UpdateMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CovarianceMode {
-    Auto,
-    Full,
-    Diagonal,
-    Off,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ShapeAdaptationMode {
-    ConditionalFull,
-    MarginalDiagonal,
-    Off,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValueKind {
     Continuous,
     Discrete,
@@ -195,8 +188,10 @@ struct RuntimeBlock {
     value_kind: ValueKind,
     lower: i64,
     upper: i64,
+    discrete_state_count: usize,
     f: BlockFn,
     continuous_adaptive_sweep: Option<ContinuousAdaptiveSweepFn>,
+    continuous_production_sweep: Option<ContinuousProductionSweepFn>,
     continuous_sweep: Option<ContinuousSweepFn>,
     scalar_candidate: Option<ScalarCandidateFn>,
     scalar_accept: Option<ScalarAcceptFn>,
@@ -410,6 +405,11 @@ impl PosteriorLib {
                 optional_symbol(self.handle, &adaptive_sweep_sym)
             }
             .map(|p| unsafe { std::mem::transmute::<*mut c_void, ContinuousAdaptiveSweepFn>(p) });
+            let production_sweep_sym = format!("hobbs_sweep_sample_{}", b.name);
+            let continuous_production_sweep = unsafe {
+                optional_symbol(self.handle, &production_sweep_sym)
+            }
+            .map(|p| unsafe { std::mem::transmute::<*mut c_void, ContinuousProductionSweepFn>(p) });
             let sweep_sym = format!("hobbs_sweep_{}", b.name);
             let continuous_sweep = unsafe { optional_symbol(self.handle, &sweep_sym) }
                 .map(|p| unsafe { std::mem::transmute::<*mut c_void, ContinuousSweepFn>(p) });
@@ -432,6 +432,11 @@ impl PosteriorLib {
             let cache_update_reversible = unsafe { optional_symbol(self.handle, &reversible_sym) }
                 .map(|p| unsafe { std::mem::transmute::<*mut c_void, CacheReversibleFn>(p)() != 0 })
                 .unwrap_or(false);
+            let discrete_state_count = if b.value_kind == ValueKind::Discrete {
+                discrete_state_count(b.lower, b.upper, &b.name)
+            } else {
+                0
+            };
             out.push(RuntimeBlock {
                 name: b.name.clone(),
                 offset: b.offset,
@@ -439,8 +444,10 @@ impl PosteriorLib {
                 value_kind: b.value_kind,
                 lower: b.lower,
                 upper: b.upper,
+                discrete_state_count,
                 f,
                 continuous_adaptive_sweep,
+                continuous_production_sweep,
                 continuous_sweep,
                 scalar_candidate,
                 scalar_accept,
@@ -534,10 +541,7 @@ struct Config {
     adapt_until: Option<usize>,
     target_accept: f64,
     target_accept_set: bool,
-    covariance_mode: CovarianceMode,
-    covariance_max_dim: usize,
     adapt_diagnostics_out: Option<String>,
-    adapt_covariance_out: Option<String>,
     out: Option<String>,
     mean_out: Option<String>,
     mean_ranges: Vec<SaveRange>,
@@ -563,10 +567,7 @@ impl Default for Config {
             adapt_until: None,
             target_accept: 0.44,
             target_accept_set: false,
-            covariance_mode: CovarianceMode::Auto,
-            covariance_max_dim: 128,
             adapt_diagnostics_out: None,
-            adapt_covariance_out: None,
             out: Some("chain.bin".to_string()),
             mean_out: None,
             mean_ranges: Vec::new(),
@@ -617,8 +618,8 @@ fn parse_args() -> Config {
             "--seed" => cfg.seed = parse_u64(val, "--seed"),
             "--step" => cfg.step = parse_f64(val, "--step"),
             "--adapt-every" => {
-                // Accepted only for backward CLI compatibility. Geometry is
-                // accumulated over one fixed window and fitted once.
+                // Accepted only for backward CLI compatibility. Scalar
+                // Robbins-Monro adaptation updates every warmup sweep.
                 let _ = parse_positive(val, "--adapt-every");
             }
             "--adapt-until" => cfg.adapt_until = Some(parse_usize(val, "--adapt-until")),
@@ -626,16 +627,7 @@ fn parse_args() -> Config {
                 cfg.target_accept = parse_f64(val, "--target-accept");
                 cfg.target_accept_set = true;
             }
-            "--adapt-covariance" | "--covariance" => {
-                cfg.covariance_mode = parse_covariance_mode(val)
-            }
-            "--adapt-covariance-max-dim" | "--covariance-max-dim" => {
-                cfg.covariance_max_dim = parse_positive(val, "--adapt-covariance-max-dim")
-            }
             "--adapt-diagnostics-out" => cfg.adapt_diagnostics_out = Some(val.clone()),
-            "--adapt-cov-out" | "--adapt-covariance-out" => {
-                cfg.adapt_covariance_out = Some(val.clone())
-            }
             "--out" => {
                 cfg.out = Some(val.clone());
                 if val.ends_with(".csv") {
@@ -851,19 +843,6 @@ fn complement_save_ranges(dim: usize, excluded: &[SaveRange]) -> Vec<SaveRange> 
     included
 }
 
-fn parse_covariance_mode(s: &str) -> CovarianceMode {
-    match s {
-        "auto" => CovarianceMode::Auto,
-        "full" | "dense" => CovarianceMode::Full,
-        "diagonal" | "diag" => CovarianceMode::Diagonal,
-        "off" | "none" => CovarianceMode::Off,
-        _ => {
-            eprintln!("--adapt-covariance must be one of: auto, full, diagonal, off");
-            process::exit(2);
-        }
-    }
-}
-
 fn parse_eval_mode(s: &str) -> EvalMode {
     match s {
         "auto" => EvalMode::Auto,
@@ -945,7 +924,7 @@ Defaults:
   --burnin 500            Warmup/burn-in sweeps (`--warmups` is an alias)
   --thin 1
   --step 0.25             Initial proposal step size
-  --adapt-every 25        Retained for compatibility; covariance geometry is fit once
+  --adapt-every 25        Retained for compatibility; scalar adaptation runs every sweep
   --adapt-until burnin    Last iteration allowed to adapt; default equals --burnin
   --target-accept 0.44    Per-coordinate Robbins-Monro acceptance target
   --seed 1311768467463790320
@@ -956,10 +935,7 @@ Defaults:
   --mean-out PATH         One-row standard binary for declaration-level means
   --update global         full-target scalar MWG or indexed block/local MWG
   --block name:off:len[:indexed[:type:lo:hi]] Scalar block metadata; type may be discrete
-  --adapt-covariance auto  full conditional-variance, diagonal, or off
-  --adapt-covariance-max-dim 128  auto uses full covariance through this dimension
   --adapt-diagnostics-out PATH  Per-coordinate adaptation diagnostics CSV
-  --adapt-cov-out PATH     Learned covariance/correlation diagnostics CSV
   --eval auto             auto, scalar, or batch
 
 Output:
@@ -1022,9 +998,14 @@ impl Xoshiro256StarStar {
     }
 
     #[inline(always)]
-    fn uniform_open01(&mut self) -> f64 {
-        let x = self.next_u64() >> 11;
+    fn uniform_from_u64(raw: u64) -> f64 {
+        let x = raw >> 11;
         ((x as f64) + 0.5) * (1.0 / ((1u64 << 53) as f64))
+    }
+
+    #[inline(always)]
+    fn uniform_open01(&mut self) -> f64 {
+        Self::uniform_from_u64(self.next_u64())
     }
 
     #[inline(always)]
@@ -1111,659 +1092,6 @@ fn splitmix64(x: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
-#[derive(Clone, Copy)]
-struct CovarianceSummary {
-    samples: usize,
-    min_variance: f64,
-    mean_variance: f64,
-    max_variance: f64,
-    min_conditional_sd: Option<f64>,
-    mean_conditional_sd: Option<f64>,
-    max_conditional_sd: Option<f64>,
-    max_abs_correlation: Option<f64>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct GeometrySchedule {
-    collect_start: usize,
-    fit_iter: usize,
-}
-
-impl GeometrySchedule {
-    fn new(adapt_until: usize) -> Self {
-        if adapt_until == 0 {
-            return Self {
-                collect_start: 0,
-                fit_iter: 0,
-            };
-        }
-        // The first 40% of adaptive warmup is scalar-only. Discard the first
-        // half of that stage, accumulate geometry over the second half, then
-        // fit it exactly once. The remaining 60% tunes scalar RW scales with
-        // the fitted covariance geometry held fixed.
-        let forty_percent = adapt_until.saturating_mul(2).saturating_add(4) / 5;
-        let fit_iter = forty_percent.max(20).min(adapt_until);
-        let collect_start = (fit_iter / 2).max(1);
-        Self {
-            collect_start,
-            fit_iter,
-        }
-    }
-
-    #[inline]
-    fn should_collect(&self, iter: usize) -> bool {
-        self.fit_iter > 0 && iter >= self.collect_start && iter <= self.fit_iter
-    }
-}
-
-fn finite_summary(values: &[f64]) -> (f64, f64, f64) {
-    let mut min_value = f64::INFINITY;
-    let mut max_value = f64::NEG_INFINITY;
-    let mut sum = 0.0;
-    let mut count = 0usize;
-    for &value in values {
-        if value.is_finite() && value >= 0.0 {
-            min_value = min_value.min(value);
-            max_value = max_value.max(value);
-            sum += value;
-            count += 1;
-        }
-    }
-    if count == 0 {
-        (f64::NAN, f64::NAN, f64::NAN)
-    } else {
-        (min_value, sum / count as f64, max_value)
-    }
-}
-
-fn covariance_summary(
-    samples: usize,
-    variances: &[f64],
-    conditional_sds: Option<&[f64]>,
-    max_abs_correlation: Option<f64>,
-) -> CovarianceSummary {
-    let (min_variance, mean_variance, max_variance) = finite_summary(variances);
-    let (min_conditional_sd, mean_conditional_sd, max_conditional_sd) =
-        if let Some(values) = conditional_sds {
-            let (min_value, mean_value, max_value) = finite_summary(values);
-            (Some(min_value), Some(mean_value), Some(max_value))
-        } else {
-            (None, None, None)
-        };
-    CovarianceSummary {
-        samples,
-        min_variance,
-        mean_variance,
-        max_variance,
-        min_conditional_sd,
-        mean_conditional_sd,
-        max_conditional_sd,
-        max_abs_correlation,
-    }
-}
-
-struct WarmupDiagonalMoments {
-    n: usize,
-    mean: Vec<f64>,
-    m2: Vec<f64>,
-    last_shapes: Vec<f64>,
-}
-
-impl WarmupDiagonalMoments {
-    fn new(dim: usize) -> Self {
-        Self {
-            n: 0,
-            mean: vec![0.0; dim],
-            m2: vec![0.0; dim],
-            last_shapes: vec![1.0; dim],
-        }
-    }
-
-    #[inline]
-    fn update(&mut self, theta: &[f64], positions: &[usize]) {
-        self.n += 1;
-        let inv_n = 1.0 / self.n as f64;
-        for (local, &position) in positions.iter().enumerate() {
-            let value = theta[position];
-            let delta = value - self.mean[local];
-            self.mean[local] += delta * inv_n;
-            self.m2[local] += delta * (value - self.mean[local]);
-        }
-    }
-
-    fn fill_shape_suggestions(&mut self, out: &mut [f64]) -> bool {
-        if self.n < 5 || out.len() != self.m2.len() {
-            return false;
-        }
-        let denom = (self.n - 1) as f64;
-        let mut mean_variance = 0.0;
-        let mut positive = 0usize;
-        for &m2 in &self.m2 {
-            let variance = m2 / denom;
-            if variance.is_finite() && variance > 0.0 {
-                mean_variance += variance;
-                positive += 1;
-            }
-        }
-        if positive == 0 {
-            return false;
-        }
-        mean_variance /= positive as f64;
-        let ridge = (mean_variance * 1e-8).max(1e-12);
-        for (shape, &m2) in out.iter_mut().zip(&self.m2) {
-            let variance = (m2 / denom).max(0.0);
-            *shape = (variance + ridge).sqrt();
-        }
-        self.last_shapes.clone_from_slice(out);
-        true
-    }
-
-    fn summary(&self) -> CovarianceSummary {
-        if self.n < 2 {
-            return covariance_summary(self.n, &[], None, None);
-        }
-        let denom = (self.n - 1) as f64;
-        let variances: Vec<f64> = self.m2.iter().map(|value| *value / denom).collect();
-        covariance_summary(self.n, &variances, Some(&self.last_shapes), None)
-    }
-}
-
-struct WarmupPackedMoments {
-    n: usize,
-    dim: usize,
-    mean: Vec<f64>,
-    delta: Vec<f64>,
-    m2: Vec<f64>,
-    last_shapes: Vec<f64>,
-    variances_work: Vec<f64>,
-    chol_work: Vec<f64>,
-    solve_work: Vec<f64>,
-}
-
-impl WarmupPackedMoments {
-    fn new(dim: usize) -> Self {
-        let dim_plus_one = dim.checked_add(1).unwrap_or_else(|| {
-            eprintln!("full covariance dimension is too large");
-            process::exit(2);
-        });
-        let packed_len = dim
-            .checked_mul(dim_plus_one)
-            .and_then(|value| value.checked_div(2))
-            .unwrap_or_else(|| {
-                eprintln!("full covariance dimension is too large");
-                process::exit(2);
-            });
-        Self {
-            n: 0,
-            dim,
-            mean: vec![0.0; dim],
-            delta: vec![0.0; dim],
-            m2: vec![0.0; packed_len],
-            last_shapes: vec![1.0; dim],
-            variances_work: vec![0.0; dim],
-            // Cholesky workspaces are allocated lazily. Correlation switches
-            // need packed moments but do not need a dense dim-by-dim matrix.
-            chol_work: Vec::new(),
-            solve_work: Vec::new(),
-        }
-    }
-
-    #[inline]
-    fn update(&mut self, theta: &[f64], positions: &[usize]) {
-        self.n += 1;
-        let inv_n = 1.0 / self.n as f64;
-        for (local, &position) in positions.iter().enumerate() {
-            let value = theta[position];
-            let delta = value - self.mean[local];
-            self.delta[local] = delta;
-            self.mean[local] += delta * inv_n;
-        }
-        for i in 0..self.dim {
-            let row = i * (i + 1) / 2;
-            let di = self.delta[i];
-            for j in 0..=i {
-                let value_j = theta[positions[j]];
-                self.m2[row + j] += di * (value_j - self.mean[j]);
-            }
-        }
-    }
-
-    fn variances(&self) -> Vec<f64> {
-        if self.n < 2 {
-            return Vec::new();
-        }
-        let denom = (self.n - 1) as f64;
-        let mut variances = vec![0.0; self.dim];
-        for i in 0..self.dim {
-            variances[i] = self.m2[i * (i + 1) / 2 + i] / denom;
-        }
-        variances
-    }
-
-    fn fill_marginal_shape_suggestions(&mut self, out: &mut [f64]) -> bool {
-        if self.n < 5 || self.dim == 0 || out.len() != self.dim {
-            return false;
-        }
-        let denom = (self.n - 1) as f64;
-        let mut mean_variance = 0.0;
-        let mut positive = 0usize;
-        for i in 0..self.dim {
-            let variance = self.m2[i * (i + 1) / 2 + i] / denom;
-            self.variances_work[i] = variance;
-            if variance.is_finite() && variance > 0.0 {
-                mean_variance += variance;
-                positive += 1;
-            }
-        }
-        if positive == 0 {
-            return false;
-        }
-        mean_variance /= positive as f64;
-        let ridge = (mean_variance * 1e-8).max(1e-12);
-        for (value, &variance) in out.iter_mut().zip(&self.variances_work) {
-            *value = (variance.max(0.0) + ridge).sqrt();
-        }
-        self.last_shapes.clone_from_slice(out);
-        true
-    }
-
-    fn fill_shape_suggestions(&mut self, out: &mut [f64]) -> bool {
-        if self.n < 5 || self.dim == 0 || out.len() != self.dim {
-            return false;
-        }
-        let denom = (self.n - 1) as f64;
-        let mut mean_variance = 0.0;
-        let mut positive = 0usize;
-        for i in 0..self.dim {
-            let variance = self.m2[i * (i + 1) / 2 + i] / denom;
-            self.variances_work[i] = variance;
-            if variance.is_finite() && variance > 0.0 {
-                mean_variance += variance;
-                positive += 1;
-            }
-        }
-        if positive == 0 {
-            return false;
-        }
-        mean_variance /= positive as f64;
-
-        let dense_len = self.dim.checked_mul(self.dim).unwrap_or_else(|| {
-            eprintln!("full covariance workspace is too large");
-            process::exit(2);
-        });
-        if self.chol_work.len() != dense_len {
-            self.chol_work.resize(dense_len, 0.0);
-        }
-        if self.solve_work.len() != self.dim {
-            self.solve_work.resize(self.dim, 0.0);
-        }
-
-        // Early empirical covariance estimates are rank deficient and noisy.
-        // Shrink off-diagonal entries toward zero, then add a small ridge. The
-        // shrinkage fades automatically as the adaptation history grows.
-        let shrink = (((self.dim + 1) as f64) / denom).clamp(0.0, 0.95);
-        let offdiag_weight = 1.0 - shrink;
-        let base_ridge = (mean_variance * 1e-8).max(1e-12);
-        let mut ridge = base_ridge;
-        let mut factored = false;
-
-        for _ in 0..8 {
-            for i in 0..self.dim {
-                let row = i * (i + 1) / 2;
-                for j in 0..=i {
-                    let raw = self.m2[row + j] / denom;
-                    let value = if i == j {
-                        raw.max(0.0) + ridge
-                    } else {
-                        raw * offdiag_weight
-                    };
-                    self.chol_work[i * self.dim + j] = value;
-                    self.chol_work[j * self.dim + i] = value;
-                }
-            }
-            if cholesky_lower_in_place(&mut self.chol_work, self.dim) {
-                factored = true;
-                break;
-            }
-            ridge *= 10.0;
-        }
-        if !factored {
-            return false;
-        }
-
-        // For covariance Sigma = L L', the conditional variance of coordinate
-        // j given all other coordinates is 1 / (Sigma^{-1})[j,j]. The diagonal
-        // of Sigma^{-1} is obtained from columns of L^{-1}. Proposals remain
-        // scalar; this only supplies a scale for each one-dimensional move.
-        let floor_sd = mean_variance.sqrt() * 1e-8 + 1e-12;
-        for column in 0..self.dim {
-            self.solve_work.fill(0.0);
-            for row in 0..self.dim {
-                let mut rhs = if row == column { 1.0 } else { 0.0 };
-                for k in 0..row {
-                    rhs -= self.chol_work[row * self.dim + k] * self.solve_work[k];
-                }
-                self.solve_work[row] = rhs / self.chol_work[row * self.dim + row];
-            }
-            let precision_diagonal: f64 = self.solve_work.iter().map(|value| value * value).sum();
-            let marginal_sd = (self.variances_work[column].max(0.0) + ridge).sqrt();
-            let conditional_sd = if precision_diagonal.is_finite() && precision_diagonal > 0.0 {
-                (1.0 / precision_diagonal).sqrt()
-            } else {
-                marginal_sd
-            };
-            out[column] = conditional_sd.min(marginal_sd).max(floor_sd);
-        }
-        self.last_shapes.clone_from_slice(out);
-        true
-    }
-
-    fn summary(&self) -> CovarianceSummary {
-        let variances = self.variances();
-        if self.n < 2 {
-            return covariance_summary(self.n, &variances, None, Some(f64::NAN));
-        }
-        let denom = (self.n - 1) as f64;
-        let mut max_abs_correlation = 0.0f64;
-        for i in 1..self.dim {
-            let row = i * (i + 1) / 2;
-            let variance_i = variances[i];
-            if !(variance_i > 0.0) {
-                continue;
-            }
-            for j in 0..i {
-                let variance_j = variances[j];
-                if !(variance_j > 0.0) {
-                    continue;
-                }
-                let covariance = self.m2[row + j] / denom;
-                let correlation = (covariance / (variance_i * variance_j).sqrt()).abs();
-                if correlation.is_finite() {
-                    max_abs_correlation = max_abs_correlation.max(correlation);
-                }
-            }
-        }
-        covariance_summary(
-            self.n,
-            &variances,
-            Some(&self.last_shapes),
-            Some(max_abs_correlation),
-        )
-    }
-}
-
-fn cholesky_lower_in_place(matrix: &mut [f64], dim: usize) -> bool {
-    for i in 0..dim {
-        for j in 0..=i {
-            let mut sum = matrix[i * dim + j];
-            for k in 0..j {
-                sum -= matrix[i * dim + k] * matrix[j * dim + k];
-            }
-            if i == j {
-                if !sum.is_finite() || sum <= 0.0 {
-                    return false;
-                }
-                matrix[i * dim + j] = sum.sqrt();
-            } else {
-                let diagonal = matrix[j * dim + j];
-                if !diagonal.is_finite() || diagonal <= 0.0 {
-                    return false;
-                }
-                matrix[i * dim + j] = sum / diagonal;
-            }
-        }
-        for j in (i + 1)..dim {
-            matrix[i * dim + j] = 0.0;
-        }
-    }
-    true
-}
-
-enum CovarianceState {
-    Full(WarmupPackedMoments),
-    Diagonal(WarmupDiagonalMoments),
-    Off,
-}
-
-struct CovarianceAdapter {
-    positions: Vec<usize>,
-    shape_work: Vec<f64>,
-    state: CovarianceState,
-    shape_mode: ShapeAdaptationMode,
-}
-
-impl CovarianceAdapter {
-    fn new(
-        mode: CovarianceMode,
-        positions: Vec<usize>,
-        max_full_dim: usize,
-    ) -> Self {
-        let dim = positions.len();
-        let shape_mode = match mode {
-            CovarianceMode::Full => ShapeAdaptationMode::ConditionalFull,
-            CovarianceMode::Diagonal => ShapeAdaptationMode::MarginalDiagonal,
-            CovarianceMode::Off => ShapeAdaptationMode::Off,
-            CovarianceMode::Auto => {
-                if dim <= max_full_dim {
-                    ShapeAdaptationMode::ConditionalFull
-                } else {
-                    ShapeAdaptationMode::MarginalDiagonal
-                }
-            }
-        };
-        let state = if dim == 0 {
-            CovarianceState::Off
-        } else {
-            match shape_mode {
-                ShapeAdaptationMode::ConditionalFull => {
-                    CovarianceState::Full(WarmupPackedMoments::new(dim))
-                }
-                ShapeAdaptationMode::MarginalDiagonal => {
-                    CovarianceState::Diagonal(WarmupDiagonalMoments::new(dim))
-                }
-                ShapeAdaptationMode::Off => CovarianceState::Off,
-            }
-        };
-        Self {
-            shape_work: vec![1.0; dim],
-            positions,
-            state,
-            shape_mode,
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        match self.shape_mode {
-            ShapeAdaptationMode::ConditionalFull => {
-                "one-time full covariance -> conditional scalar scales"
-            }
-            ShapeAdaptationMode::MarginalDiagonal => {
-                "one-time diagonal covariance -> marginal scalar scales"
-            }
-            ShapeAdaptationMode::Off => "off",
-        }
-    }
-
-    #[inline]
-    fn update(&mut self, theta: &[f64]) {
-        match &mut self.state {
-            CovarianceState::Full(model) => model.update(theta, &self.positions),
-            CovarianceState::Diagonal(model) => model.update(theta, &self.positions),
-            CovarianceState::Off => {}
-        }
-    }
-
-    fn fit_shapes_once(&mut self, applied_shapes: &mut [f64]) -> bool {
-        let has_suggestions = match self.shape_mode {
-            ShapeAdaptationMode::ConditionalFull => match &mut self.state {
-                CovarianceState::Full(model) => {
-                    model.fill_shape_suggestions(&mut self.shape_work)
-                }
-                _ => false,
-            },
-            ShapeAdaptationMode::MarginalDiagonal => match &mut self.state {
-                CovarianceState::Full(model) => {
-                    model.fill_marginal_shape_suggestions(&mut self.shape_work)
-                }
-                CovarianceState::Diagonal(model) => {
-                    model.fill_shape_suggestions(&mut self.shape_work)
-                }
-                CovarianceState::Off => false,
-            },
-            ShapeAdaptationMode::Off => false,
-        };
-        if !has_suggestions {
-            return false;
-        }
-
-        // Geometry is deliberately fitted only once. The remaining adaptive
-        // warmup sweeps retune scalar Robbins-Monro factors toward 0.44 under
-        // these frozen covariance shapes.
-        let mut changed = false;
-        for (local, &position) in self.positions.iter().enumerate() {
-            let suggested = self.shape_work[local];
-            if suggested.is_finite() && suggested > 0.0 {
-                applied_shapes[position] = suggested;
-                changed = true;
-            }
-        }
-        changed
-    }
-
-    fn summary(&self) -> CovarianceSummary {
-        match &self.state {
-            CovarianceState::Full(model) => model.summary(),
-            CovarianceState::Diagonal(model) => model.summary(),
-            CovarianceState::Off => covariance_summary(0, &[], None, None),
-        }
-    }
-
-    fn coordinate_moments(&self, position: usize) -> (Option<f64>, Option<f64>) {
-        let Some(local) = self.positions.iter().position(|&value| value == position) else {
-            return (None, None);
-        };
-        match &self.state {
-            CovarianceState::Full(model) => {
-                let mean = model
-                    .mean
-                    .get(local)
-                    .copied()
-                    .filter(|value| value.is_finite());
-                let variance = if model.n >= 2 {
-                    let value = model.m2[local * (local + 1) / 2 + local]
-                        / (model.n - 1) as f64;
-                    value.is_finite().then_some(value.max(0.0))
-                } else {
-                    None
-                };
-                (mean, variance)
-            }
-            CovarianceState::Diagonal(model) => {
-                let mean = model
-                    .mean
-                    .get(local)
-                    .copied()
-                    .filter(|value| value.is_finite());
-                let variance = if model.n >= 2 {
-                    let value = model.m2[local] / (model.n - 1) as f64;
-                    value.is_finite().then_some(value.max(0.0))
-                } else {
-                    None
-                };
-                (mean, variance)
-            }
-            CovarianceState::Off => (None, None),
-        }
-    }
-
-    fn write_covariance_diagnostics(
-        &self,
-        path: &str,
-        training_start: usize,
-        training_end: usize,
-    ) {
-        let file = File::create(path).unwrap_or_else(|error| {
-            eprintln!(
-                "could not create covariance diagnostics {}: {}",
-                path, error
-            );
-            process::exit(1);
-        });
-        let mut writer = BufWriter::with_capacity(1 << 20, file);
-        writeln!(
-            writer,
-            "mode,position_i,position_j,covariance,correlation,samples,training_start,training_end"
-        )
-        .unwrap();
-
-        match &self.state {
-            CovarianceState::Full(model) => {
-                let denom = if model.n >= 2 {
-                    Some((model.n - 1) as f64)
-                } else {
-                    None
-                };
-                let variances = model.variances();
-                for i in 0..model.dim {
-                    let row = i * (i + 1) / 2;
-                    for j in 0..=i {
-                        let covariance = denom.and_then(|value| {
-                            let out = model.m2[row + j] / value;
-                            out.is_finite().then_some(out)
-                        });
-                        let correlation = covariance.and_then(|value| {
-                            let vi = variances.get(i).copied().unwrap_or(f64::NAN);
-                            let vj = variances.get(j).copied().unwrap_or(f64::NAN);
-                            if vi > 0.0 && vj > 0.0 {
-                                let out = value / (vi * vj).sqrt();
-                                out.is_finite().then_some(out.clamp(-1.0, 1.0))
-                            } else {
-                                None
-                            }
-                        });
-                        writeln!(
-                            writer,
-                            "full,{},{},{},{},{},{},{}",
-                            self.positions[i] + 1,
-                            self.positions[j] + 1,
-                            format_optional_f64(covariance),
-                            format_optional_f64(correlation),
-                            model.n,
-                            training_start,
-                            training_end
-                        )
-                        .unwrap();
-                    }
-                }
-            }
-            CovarianceState::Diagonal(model) => {
-                for (local, &position) in self.positions.iter().enumerate() {
-                    let variance = if model.n >= 2 {
-                        let value = model.m2[local] / (model.n - 1) as f64;
-                        value.is_finite().then_some(value.max(0.0))
-                    } else {
-                        None
-                    };
-                    let correlation = variance.map(|_| 1.0);
-                    writeln!(
-                        writer,
-                        "diagonal,{0},{0},{1},{2},{3},{4},{5}",
-                        position + 1,
-                        format_optional_f64(variance),
-                        format_optional_f64(correlation),
-                        model.n,
-                        training_start,
-                        training_end
-                    )
-                    .unwrap();
-                }
-            }
-            CovarianceState::Off => {}
-        }
-        writer.flush().unwrap();
-    }
-}
-
 fn format_optional_f64(value: Option<f64>) -> String {
     match value {
         Some(number) if number.is_finite() => format!("{number:.17e}"),
@@ -1781,8 +1109,6 @@ fn write_adaptation_diagnostics(
     warmup_accepted_counts: &[u64],
     proposal_scales: &[f64],
     tuning_factors: &[f64],
-    covariance_shapes: &[f64],
-    covariance: &CovarianceAdapter,
 ) {
     let file = File::create(path).unwrap_or_else(|error| {
         eprintln!(
@@ -1794,7 +1120,7 @@ fn write_adaptation_diagnostics(
     let mut writer = BufWriter::with_capacity(1 << 20, file);
     writeln!(
         writer,
-        "position,value_kind,proposals,accepted,acceptance_rate,warmup_proposals,warmup_accepted,warmup_acceptance_rate,proposal_sd,tuning_factor,covariance_shape,warmup_mean,warmup_variance"
+        "position,value_kind,proposals,accepted,acceptance_rate,warmup_proposals,warmup_accepted,warmup_acceptance_rate,proposal_sd,tuning_factor"
     )
     .unwrap();
 
@@ -1807,10 +1133,9 @@ fn write_adaptation_diagnostics(
         let warmup_acceptance_rate =
             (warmup_proposals > 0).then_some(warmup_accepted as f64 / warmup_proposals as f64);
         let is_continuous = value_kinds[position] == ValueKind::Continuous;
-        let (warmup_mean, warmup_variance) = covariance.coordinate_moments(position);
         writeln!(
             writer,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{}",
             position + 1,
             value_kinds[position].as_str(),
             proposals,
@@ -1820,10 +1145,7 @@ fn write_adaptation_diagnostics(
             warmup_accepted,
             format_optional_f64(warmup_acceptance_rate),
             format_optional_f64(is_continuous.then_some(proposal_scales[position])),
-            format_optional_f64(is_continuous.then_some(tuning_factors[position])),
-            format_optional_f64(is_continuous.then_some(covariance_shapes[position])),
-            format_optional_f64(warmup_mean),
-            format_optional_f64(warmup_variance)
+            format_optional_f64(is_continuous.then_some(tuning_factors[position]))
         )
         .unwrap();
     }
@@ -1847,11 +1169,10 @@ fn adaptation_multipliers(sweep: usize, target_accept: f64) -> (f64, f64) {
 fn compose_proposal_scale(
     initial_step: f64,
     tuning_factor: f64,
-    covariance_shape: f64,
     min_scale: f64,
     max_scale: f64,
 ) -> f64 {
-    (initial_step * tuning_factor * covariance_shape).clamp(min_scale, max_scale)
+    (initial_step * tuning_factor).clamp(min_scale, max_scale)
 }
 
 #[inline(always)]
@@ -1865,27 +1186,6 @@ fn adapt_tuning_factor(
 ) {
     *tuning_factor =
         (*tuning_factor * if accepted { up } else { down }).clamp(min_tuning, max_tuning);
-}
-
-#[inline]
-fn rebuild_proposal_scales(
-    positions: &[usize],
-    initial_step: f64,
-    tuning_factors: &[f64],
-    covariance_shapes: &[f64],
-    proposal_scales: &mut [f64],
-    min_scale: f64,
-    max_scale: f64,
-) {
-    for &position in positions {
-        proposal_scales[position] = compose_proposal_scale(
-            initial_step,
-            tuning_factors[position],
-            covariance_shapes[position],
-            min_scale,
-            max_scale,
-        );
-    }
 }
 
 enum ChainWriter {
@@ -1999,9 +1299,7 @@ impl BinaryChainWriter {
     #[inline(always)]
     fn write_record(&mut self, iter: u64, logp: f64, accepted: bool, theta: &[f64]) {
         self.begin_record(iter, logp, accepted);
-        for &v in theta {
-            push_f64(&mut self.buf, v);
-        }
+        push_f64_slice(&mut self.buf, theta);
         self.flush_buffer_if_needed();
     }
 
@@ -2016,9 +1314,10 @@ impl BinaryChainWriter {
     ) {
         self.begin_record(iter, logp, accepted);
         for range in ranges {
-            for &v in &theta[range.offset..(range.offset + range.len)] {
-                push_f64(&mut self.buf, v);
-            }
+            push_f64_slice(
+                &mut self.buf,
+                &theta[range.offset..(range.offset + range.len)],
+            );
         }
         self.flush_buffer_if_needed();
     }
@@ -2115,30 +1414,73 @@ fn push_f64(buf: &mut Vec<u8>, x: f64) {
     buf.extend_from_slice(&x.to_le_bytes());
 }
 
+#[inline(always)]
+fn push_f64_slice(buf: &mut Vec<u8>, values: &[f64]) {
+    #[cfg(target_endian = "little")]
+    unsafe {
+        let bytes = std::slice::from_raw_parts(
+            values.as_ptr() as *const u8,
+            std::mem::size_of_val(values),
+        );
+        buf.extend_from_slice(bytes);
+    }
+
+    #[cfg(target_endian = "big")]
+    for &value in values {
+        push_f64(buf, value);
+    }
+}
+
 #[inline]
 fn record_size(dim: usize) -> usize {
     8 + 8 + 8 + dim * 8 // iter + accepted/padding + logp + theta
 }
 
-fn print_progress(iter: usize, total: usize, last_percent: &mut usize) {
-    if total == 0 {
-        return;
+struct ProgressDisplay {
+    total: usize,
+    last_percent: usize,
+    next_iter: usize,
+}
+
+impl ProgressDisplay {
+    fn new(total: usize) -> Self {
+        Self {
+            total,
+            last_percent: usize::MAX,
+            next_iter: 0,
+        }
     }
-    let percent = ((iter.saturating_mul(100)) / total).min(100);
-    if percent == *last_percent {
-        return;
+
+    #[inline(always)]
+    fn update(&mut self, iter: usize) {
+        if self.total == 0 || iter < self.next_iter {
+            return;
+        }
+
+        let percent = (((iter as u128) * 100u128) / (self.total as u128)).min(100) as usize;
+        if percent == self.last_percent {
+            return;
+        }
+        self.last_percent = percent;
+
+        let width = 30usize;
+        let filled = (percent * width) / 100;
+        let empty = width - filled;
+        eprint!(
+            "\r|{}{}|{}%",
+            "*".repeat(filled),
+            " ".repeat(empty),
+            percent
+        );
+        let _ = std::io::stderr().flush();
+
+        self.next_iter = if percent >= 100 {
+            usize::MAX
+        } else {
+            let numerator = ((percent + 1) as u128) * (self.total as u128);
+            ((numerator + 99) / 100).min(usize::MAX as u128) as usize
+        };
     }
-    *last_percent = percent;
-    let width = 30usize;
-    let filled = (percent * width) / 100;
-    let empty = width - filled;
-    eprint!(
-        "\r|{}{}|{}%",
-        "*".repeat(filled),
-        " ".repeat(empty),
-        percent
-    );
-    let _ = std::io::stderr().flush();
 }
 
 struct MeanAccumulator {
@@ -2346,13 +1688,13 @@ impl RetainedOutput {
 }
 
 #[inline(always)]
-fn metropolis_accept(log_alpha: f64, uniform: f64) -> bool {
+fn metropolis_accept_from_bits(log_alpha: f64, uniform_bits: u64) -> bool {
     if log_alpha.is_nan() || log_alpha == f64::NEG_INFINITY {
         false
     } else if log_alpha >= 0.0 {
         true
     } else {
-        uniform < log_alpha.exp()
+        Xoshiro256StarStar::uniform_from_u64(uniform_bits) < log_alpha.exp()
     }
 }
 
@@ -2451,11 +1793,9 @@ fn run_block_sampler(
     let adapt_until = cfg.adapt_until.unwrap_or(cfg.burnin).min(total_iters);
     let mut rng = Xoshiro256StarStar::new(cfg.seed);
     let mut retained_output = RetainedOutput::new(cfg, dim, total_iters, cfg.samples);
-    let mut saved = 0usize;
 
     let mut proposal_scales = vec![cfg.step; dim];
     let mut tuning_factors = vec![1.0; dim];
-    let mut covariance_shapes = vec![1.0; dim];
     let min_tuning = (-20.0f64).exp();
     let max_tuning = 20.0f64.exp();
     let min_scale = (cfg.step * min_tuning).max(1e-12);
@@ -2467,10 +1807,6 @@ fn run_block_sampler(
     let mut coordinate_accepts = vec![0u64; dim];
     let mut coordinate_adapt_proposals = vec![0u64; dim];
     let mut coordinate_adapt_accepts = vec![0u64; dim];
-    let mut continuous_proposals = 0u64;
-    let mut continuous_accepts = 0u64;
-    let mut discrete_updates = 0u64;
-    let mut discrete_moves = 0u64;
 
     let continuous_positions: Vec<usize> = blocks
         .iter()
@@ -2480,12 +1816,6 @@ fn run_block_sampler(
     for &position in &continuous_positions {
         coordinate_adapt_proposals[position] = adapt_until as u64;
     }
-    let geometry_schedule = GeometrySchedule::new(adapt_until);
-    let mut covariance = CovarianceAdapter::new(
-        cfg.covariance_mode,
-        continuous_positions.clone(),
-        cfg.covariance_max_dim,
-    );
 
     let max_continuous_len = blocks
         .iter()
@@ -2496,13 +1826,14 @@ fn run_block_sampler(
     let max_discrete_values = blocks
         .iter()
         .filter(|block| block.value_kind == ValueKind::Discrete)
-        .map(|block| discrete_state_count(block.lower, block.upper, &block.name))
+        .map(|block| block.discrete_state_count)
         .max()
         .unwrap_or(0);
     let mut normals = vec![0.0f64; max_continuous_len];
     let mut uniforms = vec![0.0f64; max_continuous_len];
     let mut accepted_flags = vec![0u8; max_continuous_len];
     let mut discrete_logps = vec![f64::NEG_INFINITY; max_discrete_values];
+    let mut discrete_weights = vec![0.0f64; max_discrete_values];
 
     let mut current_logp = initial_lp.unwrap_or(0.0);
     let mut has_full_logp = initial_lp.is_some();
@@ -2518,7 +1849,16 @@ fn run_block_sampler(
         .iter()
         .filter(|block| {
             block.value_kind == ValueKind::Continuous
-                && (block.continuous_adaptive_sweep.is_some() || block.continuous_sweep.is_some())
+                && (block.continuous_adaptive_sweep.is_some()
+                    || block.continuous_production_sweep.is_some()
+                    || block.continuous_sweep.is_some())
+        })
+        .count();
+    let production_sweep_count = blocks
+        .iter()
+        .filter(|block| {
+            block.value_kind == ValueKind::Continuous
+                && block.continuous_production_sweep.is_some()
         })
         .count();
     let fused_sweep_count = blocks
@@ -2566,6 +1906,10 @@ fn run_block_sampler(
             fused_sweep_count, continuous_block_count
         );
         eprintln!(
+            "  frozen C sweeps:      {}/{} continuous blocks",
+            production_sweep_count, continuous_block_count
+        );
+        eprintln!(
             "  full posterior logp:  {}",
             if has_full_logp {
                 "yes"
@@ -2577,13 +1921,12 @@ fn run_block_sampler(
             "  attached cache:       {}",
             if posterior.has_cache() { "yes" } else { "no" }
         );
-        eprintln!("  covariance adaptation:{}", covariance.name());
     }
 
     let start = std::time::Instant::now();
-    let mut last_progress_percent = usize::MAX;
+    let mut progress = ProgressDisplay::new(total_iters);
     if !cfg.quiet {
-        print_progress(0, total_iters, &mut last_progress_percent);
+        progress.update(0);
     }
 
     for iter in 1..=total_iters {
@@ -2597,6 +1940,42 @@ fn run_block_sampler(
 
         for block in &blocks {
             if block.value_kind == ValueKind::Continuous {
+                if !adapting {
+                    if let Some(sweep_fn) = block.continuous_production_sweep {
+                        for local in 0..block.len {
+                            normals[local] = rng.normal();
+                            uniforms[local] = rng.uniform_open01();
+                        }
+                        let mut bad_index: c_int = 0;
+                        let mut accepted_in_block = 0u64;
+                        let scale_slice =
+                            &proposal_scales[block.offset..(block.offset + block.len)];
+                        let delta_sum = unsafe {
+                            sweep_fn(
+                                theta.as_mut_ptr(),
+                                scale_slice.as_ptr(),
+                                normals.as_ptr(),
+                                uniforms.as_ptr(),
+                                coordinate_accepts.as_mut_ptr().add(block.offset),
+                                &mut accepted_in_block,
+                                &mut bad_index,
+                            )
+                        };
+                        if delta_sum.is_nan() {
+                            eprintln!(
+                                "block {}({}) gave a non-finite current local log posterior",
+                                block.name, bad_index
+                            );
+                            process::exit(1);
+                        }
+                        current_logp += delta_sum;
+                        if accepted_in_block > 0 {
+                            accepted_sweep = true;
+                        }
+                        continue;
+                    }
+                }
+
                 if block.len >= FUSED_ADAPTIVE_SWEEP_MIN_LEN {
                     if let Some(sweep_fn) = block.continuous_adaptive_sweep {
                         for local in 0..block.len {
@@ -2610,7 +1989,6 @@ fn run_block_sampler(
                                 theta.as_mut_ptr(),
                                 proposal_scales.as_mut_ptr().add(block.offset),
                                 tuning_factors.as_mut_ptr().add(block.offset),
-                                covariance_shapes.as_ptr().add(block.offset),
                                 normals.as_ptr(),
                                 uniforms.as_ptr(),
                                 coordinate_accepts.as_mut_ptr().add(block.offset),
@@ -2635,8 +2013,6 @@ fn run_block_sampler(
                             process::exit(1);
                         }
                         current_logp += delta_sum;
-                        continuous_proposals += block.len as u64;
-                        continuous_accepts += accepted_in_block;
                         if accepted_in_block > 0 {
                             accepted_sweep = true;
                         }
@@ -2672,10 +2048,8 @@ fn run_block_sampler(
                     for local in 0..block.len {
                         let position = block.offset + local;
                         let accepted = accepted_flags[local] != 0;
-                        continuous_proposals += 1;
                         if accepted {
                             coordinate_accepts[position] += 1;
-                            continuous_accepts += 1;
                             accepted_sweep = true;
                         }
                         if adapting {
@@ -2693,7 +2067,6 @@ fn run_block_sampler(
                             proposal_scales[position] = compose_proposal_scale(
                                 cfg.step,
                                 tuning_factors[position],
-                                covariance_shapes[position],
                                 min_scale,
                                 max_scale,
                             );
@@ -2728,12 +2101,15 @@ fn run_block_sampler(
                     }
                     let new_local = unsafe { (block.f)(theta.as_ptr(), index) };
                     let log_alpha = new_local - old_local;
-                    let accepted =
-                        new_local.is_finite() && metropolis_accept(log_alpha, rng.uniform_open01());
+                    let accepted = if new_local.is_finite() {
+                        let uniform_bits = rng.next_u64();
+                        metropolis_accept_from_bits(log_alpha, uniform_bits)
+                    } else {
+                        false
+                    };
                     if accepted {
                         current_logp += log_alpha;
                         coordinate_accepts[position] += 1;
-                        continuous_accepts += 1;
                         accepted_sweep = true;
                     } else if block.cache_update.is_some() {
                         if let Some(undo_fn) = block.cache_undo {
@@ -2759,7 +2135,6 @@ fn run_block_sampler(
                     } else {
                         theta[position] = old_value;
                     }
-                    continuous_proposals += 1;
                     if adapting {
                         if accepted {
                             coordinate_adapt_accepts[position] += 1;
@@ -2775,7 +2150,6 @@ fn run_block_sampler(
                         proposal_scales[position] = compose_proposal_scale(
                             cfg.step,
                             tuning_factors[position],
-                            covariance_shapes[position],
                             min_scale,
                             max_scale,
                         );
@@ -2791,7 +2165,7 @@ fn run_block_sampler(
                 let old_value = theta[position];
                 let old_integer = old_value.round() as i64;
                 let old_local = unsafe { (block.f)(theta.as_ptr(), index) };
-                let state_count = discrete_state_count(block.lower, block.upper, &block.name);
+                let state_count = block.discrete_state_count;
                 let generated_transaction = block.scalar_candidate.is_some()
                     && block.scalar_accept.is_some()
                     && block.scalar_reject.is_some();
@@ -2866,10 +2240,15 @@ fn run_block_sampler(
                     process::exit(1);
                 }
                 let mut total_weight = 0.0f64;
-                for &value_logp in &discrete_logps[..state_count] {
-                    if value_logp.is_finite() {
-                        total_weight += (value_logp - max_logp).exp();
-                    }
+                for state_index in 0..state_count {
+                    let value_logp = discrete_logps[state_index];
+                    let weight = if value_logp.is_finite() {
+                        (value_logp - max_logp).exp()
+                    } else {
+                        0.0
+                    };
+                    discrete_weights[state_index] = weight;
+                    total_weight += weight;
                 }
                 if !(total_weight > 0.0) || !total_weight.is_finite() {
                     eprintln!(
@@ -2883,12 +2262,7 @@ fn run_block_sampler(
                 // Default to the last state so a final ulp of normalization
                 // error cannot incorrectly wrap the draw back to state zero.
                 let mut chosen_state = state_count - 1;
-                for (state_index, &value_logp) in discrete_logps[..state_count].iter().enumerate() {
-                    let weight = if value_logp.is_finite() {
-                        (value_logp - max_logp).exp()
-                    } else {
-                        0.0
-                    };
+                for (state_index, &weight) in discrete_weights[..state_count].iter().enumerate() {
                     if draw <= weight {
                         chosen_state = state_index;
                         break;
@@ -2929,13 +2303,11 @@ fn run_block_sampler(
                             }
                         }
                     }
-                    discrete_moves += 1;
                     coordinate_accepts[position] += 1;
                     accepted_sweep = true;
                 } else {
                     theta[position] = old_value;
                 }
-                discrete_updates += 1;
 
                 if old_local.is_finite() && chosen_logp.is_finite() {
                     current_logp += chosen_logp - old_local;
@@ -2950,29 +2322,12 @@ fn run_block_sampler(
             }
         }
 
-        if adapting && geometry_schedule.should_collect(iter) {
-            covariance.update(&theta);
-        }
-        if adapting && iter == geometry_schedule.fit_iter {
-            if covariance.fit_shapes_once(&mut covariance_shapes) {
-                rebuild_proposal_scales(
-                    &continuous_positions,
-                    cfg.step,
-                    &tuning_factors,
-                    &covariance_shapes,
-                    &mut proposal_scales,
-                    min_scale,
-                    max_scale,
-                );
-            }
-        }
 
         if iter > cfg.burnin && ((iter - cfg.burnin) % cfg.thin == 0) {
-            saved += 1;
             retained_output.retain(iter as u64, current_logp, accepted_sweep, &theta);
         }
         if !cfg.quiet {
-            print_progress(iter, total_iters, &mut last_progress_percent);
+            progress.update(iter);
         }
     }
     if !cfg.quiet {
@@ -2991,27 +2346,33 @@ fn run_block_sampler(
             &coordinate_adapt_accepts,
             &proposal_scales,
             &tuning_factors,
-            &covariance_shapes,
-            &covariance,
-        );
-    }
-    if let Some(path) = cfg.adapt_covariance_out.as_deref() {
-        covariance.write_covariance_diagnostics(
-            path,
-            geometry_schedule.collect_start,
-            geometry_schedule.fit_iter,
         );
     }
 
     if !cfg.quiet {
         let seconds = start.elapsed().as_secs_f64();
-        let covariance_summary = covariance.summary();
-        let total_updates = continuous_proposals + discrete_updates;
+        let total_updates = (total_iters as u64).saturating_mul(dim as u64);
+        let continuous_proposals =
+            (total_iters as u64).saturating_mul(continuous_positions.len() as u64);
+        let continuous_accepts: u64 = continuous_positions
+            .iter()
+            .map(|&position| coordinate_accepts[position])
+            .sum();
+        let discrete_position_count = dim - continuous_positions.len();
+        let discrete_updates =
+            (total_iters as u64).saturating_mul(discrete_position_count as u64);
+        let discrete_moves: u64 = value_kinds
+            .iter()
+            .zip(coordinate_accepts.iter())
+            .filter_map(|(kind, &accepted)| {
+                (*kind == ValueKind::Discrete).then_some(accepted)
+            })
+            .sum();
         eprintln!("done");
         eprintln!("  dim:                  {}", dim);
         eprintln!("  sweeps:               {}", total_iters);
         eprintln!("  scalar updates:       {}", total_updates);
-        eprintln!("  saved samples:        {}", saved);
+        eprintln!("  saved samples:        {}", cfg.samples);
 
         if !continuous_positions.is_empty() {
             let mut scale_min = f64::INFINITY;
@@ -3057,32 +2418,6 @@ fn run_block_sampler(
             );
         }
         eprintln!("  adapt until:          {}", adapt_until);
-        eprintln!(
-            "  covariance adaptation:{} ({} sweep samples)",
-            covariance.name(),
-            covariance_summary.samples
-        );
-        if covariance_summary.samples >= 2 {
-            eprintln!(
-                "  marginal variance:    mean {:.6e}, min {:.6e}, max {:.6e}",
-                covariance_summary.mean_variance,
-                covariance_summary.min_variance,
-                covariance_summary.max_variance
-            );
-            if let (Some(mean_sd), Some(min_sd), Some(max_sd)) = (
-                covariance_summary.mean_conditional_sd,
-                covariance_summary.min_conditional_sd,
-                covariance_summary.max_conditional_sd,
-            ) {
-                eprintln!(
-                    "  learned scalar shape: mean {:.6e}, min {:.6e}, max {:.6e}",
-                    mean_sd, min_sd, max_sd
-                );
-            }
-            if let Some(max_correlation) = covariance_summary.max_abs_correlation {
-                eprintln!("  max |correlation|:    {:.6}", max_correlation);
-            }
-        }
         eprintln!("  seconds:              {:.6}", seconds);
         eprintln!(
             "  sweeps/sec:           {:.0}",
@@ -3112,35 +2447,26 @@ fn run_full_scalar_sampler(
     let mut rng = Xoshiro256StarStar::new(cfg.seed);
     let mut proposal_scales = vec![cfg.step; dim];
     let mut tuning_factors = vec![1.0; dim];
-    let mut covariance_shapes = vec![1.0; dim];
     let min_tuning = (-20.0f64).exp();
     let max_tuning = 20.0f64.exp();
     let min_scale = (cfg.step * min_tuning).max(1e-12);
     let max_scale = (cfg.step * max_tuning).min(1e12);
-    let mut proposals = vec![0u64; dim];
+    // Every coordinate is visited once per sweep, so proposal counts are
+    // deterministic and do not need hot-loop increments.
+    let proposals = vec![total_iters as u64; dim];
     let mut accepts = vec![0u64; dim];
-    let mut adapt_proposals = vec![0u64; dim];
+    let adapt_proposals = vec![adapt_until as u64; dim];
     let mut adapt_accepts = vec![0u64; dim];
-    let positions: Vec<usize> = (0..dim).collect();
-    let geometry_schedule = GeometrySchedule::new(adapt_until);
-    let mut covariance = CovarianceAdapter::new(
-        cfg.covariance_mode,
-        positions.clone(),
-        cfg.covariance_max_dim,
-    );
-    let mut accepted_total = 0u64;
-    let mut saved = 0usize;
 
     if !cfg.quiet {
         eprintln!("  update mode:          full-target adaptive scalar Metropolis-within-Gibbs");
         eprintln!("  scalar parameters:    {}", dim);
-        eprintln!("  covariance adaptation:{}", covariance.name());
     }
 
     let start = std::time::Instant::now();
-    let mut last_progress_percent = usize::MAX;
+    let mut progress = ProgressDisplay::new(total_iters);
     if !cfg.quiet {
-        print_progress(0, total_iters, &mut last_progress_percent);
+        progress.update(0);
     }
 
     for iter in 1..=total_iters {
@@ -3157,19 +2483,20 @@ fn run_full_scalar_sampler(
             theta[position] = old_value + proposal_scales[position] * rng.normal();
             let proposed_logp = posterior.logp(&theta);
             let log_alpha = proposed_logp - current_logp;
-            let accepted =
-                proposed_logp.is_finite() && metropolis_accept(log_alpha, rng.uniform_open01());
-            proposals[position] += 1;
+            let accepted = if proposed_logp.is_finite() {
+                let uniform_bits = rng.next_u64();
+                metropolis_accept_from_bits(log_alpha, uniform_bits)
+            } else {
+                false
+            };
             if accepted {
                 current_logp = proposed_logp;
                 accepts[position] += 1;
-                accepted_total += 1;
                 accepted_sweep = true;
             } else {
                 theta[position] = old_value;
             }
             if adapting {
-                adapt_proposals[position] += 1;
                 if accepted {
                     adapt_accepts[position] += 1;
                 }
@@ -3184,36 +2511,18 @@ fn run_full_scalar_sampler(
                 proposal_scales[position] = compose_proposal_scale(
                     cfg.step,
                     tuning_factors[position],
-                    covariance_shapes[position],
                     min_scale,
                     max_scale,
                 );
             }
         }
 
-        if adapting && geometry_schedule.should_collect(iter) {
-            covariance.update(&theta);
-        }
-        if adapting && iter == geometry_schedule.fit_iter {
-            if covariance.fit_shapes_once(&mut covariance_shapes) {
-                rebuild_proposal_scales(
-                    &positions,
-                    cfg.step,
-                    &tuning_factors,
-                    &covariance_shapes,
-                    &mut proposal_scales,
-                    min_scale,
-                    max_scale,
-                );
-            }
-        }
 
         if iter > cfg.burnin && ((iter - cfg.burnin) % cfg.thin == 0) {
-            saved += 1;
             retained_output.retain(iter as u64, current_logp, accepted_sweep, &theta);
         }
         if !cfg.quiet {
-            print_progress(iter, total_iters, &mut last_progress_percent);
+            progress.update(iter);
         }
     }
     if !cfg.quiet {
@@ -3233,15 +2542,6 @@ fn run_full_scalar_sampler(
             &adapt_accepts,
             &proposal_scales,
             &tuning_factors,
-            &covariance_shapes,
-            &covariance,
-        );
-    }
-    if let Some(path) = cfg.adapt_covariance_out.as_deref() {
-        covariance.write_covariance_diagnostics(
-            path,
-            geometry_schedule.collect_start,
-            geometry_schedule.fit_iter,
         );
     }
 
@@ -3262,13 +2562,13 @@ fn run_full_scalar_sampler(
             rate_max = rate_max.max(rate);
             rate_sum += rate;
         }
-        let total_proposals = total_iters as u64 * dim as u64;
-        let covariance_summary = covariance.summary();
+        let total_proposals = (total_iters as u64).saturating_mul(dim as u64);
+        let accepted_total: u64 = accepts.iter().copied().sum();
         eprintln!("done");
         eprintln!("  dim:                  {}", dim);
         eprintln!("  sweeps:               {}", total_iters);
         eprintln!("  scalar updates:       {}", total_proposals);
-        eprintln!("  saved samples:        {}", saved);
+        eprintln!("  saved samples:        {}", cfg.samples);
         eprintln!(
             "  continuous accept:    {:.4}",
             accepted_total as f64 / total_proposals.max(1) as f64
@@ -3287,32 +2587,6 @@ fn run_full_scalar_sampler(
         );
         eprintln!("  target accept:        {:.4}", cfg.target_accept);
         eprintln!("  adapt until:          {}", adapt_until);
-        eprintln!(
-            "  covariance adaptation:{} ({} sweep samples)",
-            covariance.name(),
-            covariance_summary.samples
-        );
-        if covariance_summary.samples >= 2 {
-            eprintln!(
-                "  marginal variance:    mean {:.6e}, min {:.6e}, max {:.6e}",
-                covariance_summary.mean_variance,
-                covariance_summary.min_variance,
-                covariance_summary.max_variance
-            );
-            if let (Some(mean_sd), Some(min_sd), Some(max_sd)) = (
-                covariance_summary.mean_conditional_sd,
-                covariance_summary.min_conditional_sd,
-                covariance_summary.max_conditional_sd,
-            ) {
-                eprintln!(
-                    "  learned scalar shape: mean {:.6e}, min {:.6e}, max {:.6e}",
-                    mean_sd, min_sd, max_sd
-                );
-            }
-            if let Some(max_correlation) = covariance_summary.max_abs_correlation {
-                eprintln!("  max |correlation|:    {:.6}", max_correlation);
-            }
-        }
         eprintln!("  seconds:              {:.6}", seconds);
         eprintln!(
             "  sweeps/sec:           {:.0}",
@@ -3448,51 +2722,6 @@ mod tests {
         assert!((0.0023..0.0031).contains(&tail_rate), "tail3={tail_rate}");
     }
 
-    #[test]
-    fn packed_covariance_recovers_full_correlation_and_conditional_scale() {
-        let positions = [0usize, 1usize];
-        let rho = 0.9f64;
-        let orthogonal_weight = (1.0 - rho * rho).sqrt();
-        let z1 = [-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0];
-        let z2 = [-1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0];
-        let mut covariance = WarmupPackedMoments::new(2);
-        for _ in 0..1_000 {
-            for sample in 0..z1.len() {
-                let theta = [
-                    z1[sample],
-                    rho * z1[sample] + orthogonal_weight * z2[sample],
-                ];
-                covariance.update(&theta, &positions);
-            }
-        }
-        let variances = covariance.variances();
-        assert!((variances[0] - 1.0).abs() < 0.001, "v0={}", variances[0]);
-        assert!((variances[1] - 1.0).abs() < 0.001, "v1={}", variances[1]);
-        let mut shapes = vec![0.0; 2];
-        assert!(covariance.fill_shape_suggestions(&mut shapes));
-        let expected = (1.0 - rho * rho).sqrt();
-        assert!((shapes[0] - expected).abs() < 0.01, "s0={}", shapes[0]);
-        assert!((shapes[1] - expected).abs() < 0.01, "s1={}", shapes[1]);
-        let summary = covariance.summary();
-        assert!((summary.max_abs_correlation.expect("correlation") - rho).abs() < 0.001);
-    }
-
-    #[test]
-    fn geometry_schedule_fits_once_at_two_fifths_of_adaptive_warmup() {
-        let schedule = GeometrySchedule::new(100);
-        assert_eq!(schedule.collect_start, 20);
-        assert_eq!(schedule.fit_iter, 40);
-        assert!(!schedule.should_collect(19));
-        assert!(schedule.should_collect(20));
-        assert!(schedule.should_collect(40));
-        assert!(!schedule.should_collect(41));
-
-        let no_adaptation = GeometrySchedule::new(0);
-        assert_eq!(no_adaptation.collect_start, 0);
-        assert_eq!(no_adaptation.fit_iter, 0);
-        assert!(!no_adaptation.should_collect(0));
-        assert!(!no_adaptation.should_collect(1));
-    }
 
     #[test]
     fn robbins_monro_update_is_coordinate_local_per_sweep() {

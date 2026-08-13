@@ -402,21 +402,8 @@ hobbs_check_sampler <- function(quiet = FALSE) {
 #' @param rows_by Optional named list for indexed block helpers. `rows_by = list(ability = ability_idx)` creates `ability_nrows(p)` and `ability_row(p, ii)` in C.
 #' @param no_output Logical. If TRUE, benchmark without writing output.
 #' @param step Initial proposal step scale.
-#' @param adapt_every Retained for backward compatibility. Posterior
-#'   variance-covariance geometry is now accumulated over one fixed warmup
-#'   window and fitted exactly once; it is no longer refreshed online.
-#' @param adapt_covariance One-time covariance training for scalar block
-#'   updates. `"full"` fits the full posterior variance-covariance matrix once
-#'   during warmup and uses its precision diagonal to scale each coordinate by
-#'   an estimated conditional standard deviation. `"diagonal"` fits marginal
-#'   variances once, `"none"` disables variance adaptation, and `"auto"` uses
-#'   full training for up to `adapt_covariance_max_dim` continuous coordinates
-#'   and diagonal training above that. Scalar 0.44 adaptation continues after
-#'   this one-time geometry fit.
-#' @param adapt_covariance_max_dim Maximum number of continuous coordinates
-#'   for which `adapt_covariance = "auto"` maintains the complete packed
-#'   variance-covariance matrix. Ignored by explicit `"full"`, `"diagonal"`,
-#'   and `"none"` modes.
+#' @param adapt_every Retained for backward compatibility. Scalar
+#'   Robbins-Monro adaptation updates every warmup sweep.
 #' @param target_accept Target Metropolis acceptance rate. If NULL, defaults to
 #'   0.44 because both update modes make one-dimensional random-walk proposals.
 #' @param seed RNG seed.
@@ -436,8 +423,7 @@ hobbs_check_sampler <- function(quiet = FALSE) {
 #'   `chain_output` is the full-draw file for unmarked parameters and
 #'   `mean_output` is the one-record binary for declarations marked
 #'   `save=mean`. In block mode, `adaptation` points to per-coordinate proposal
-#'   diagnostics, and `adapt_covariance_file` points to the learned
-#'   covariance/correlation diagnostics.
+#'   diagnostics.
 #' @export
 hobbs <- function(model,
                     dim = NULL,
@@ -456,8 +442,6 @@ hobbs <- function(model,
                     no_output = FALSE,
                     step = 0.25,
                     adapt_every = 25L,
-                    adapt_covariance = c("auto", "full", "diagonal", "none"),
-                    adapt_covariance_max_dim = 128L,
                     target_accept = NULL,
                     seed = 123456789,
                     thin = 1L,
@@ -472,7 +456,6 @@ hobbs <- function(model,
   format <- match.arg(format)
   save <- match.arg(save)
   update <- match.arg(update)
-  adapt_covariance <- match.arg(adapt_covariance)
 
   burnin_missing <- missing(burnin)
   adapt_until_missing <- missing(adapt_until)
@@ -515,11 +498,6 @@ hobbs <- function(model,
     dim <- NULL
   }
   target_accept_user <- target_accept
-  adapt_covariance_max_dim <- count_arg(
-    adapt_covariance_max_dim,
-    "adapt_covariance_max_dim",
-    1L
-  )
   log_cache_config <- validate_log_cache(log_cache, log_cache_bits)
 
   dir.create(workdir, recursive = TRUE, showWarnings = FALSE)
@@ -597,15 +575,13 @@ hobbs <- function(model,
     mean_range_cli_args,
     "--step", format_num(step),
     "--adapt-every", adapt_every,
-    "--adapt-covariance", adapt_covariance,
-    "--adapt-covariance-max-dim", adapt_covariance_max_dim,
     "--target-accept", format_num(target_accept),
     "--seed", seed_arg,
-    "--thin", thin
+    "--thin", thin,
+    if (isTRUE(quiet)) "--quiet"
   )
 
   adaptation_path <- NA_character_
-  adapt_covariance_path <- NA_character_
   mean_output_path <- NA_character_
   chain_output_path <- NA_character_
   declaration_means <- identical(save, "chain") && isTRUE(output_plan$declaration_means)
@@ -636,12 +612,7 @@ hobbs <- function(model,
 
     if (identical(update, "block")) {
       adaptation_path <- paste0(out_path, ".adaptation.csv")
-      adapt_covariance_path <- paste0(out_path, ".adapt_covariance.csv")
-      args <- c(
-        args,
-        "--adapt-diagnostics-out", adaptation_path,
-        "--adapt-cov-out", adapt_covariance_path
-      )
+      args <- c(args, "--adapt-diagnostics-out", adaptation_path)
     }
   }
 
@@ -664,10 +635,6 @@ hobbs <- function(model,
     if (!file.exists(adaptation_path)) {
       stop("hobbs sampler did not create scalar adaptation diagnostics: ",
            adaptation_path, call. = FALSE)
-    }
-    if (!file.exists(adapt_covariance_path)) {
-      stop("hobbs sampler did not create covariance diagnostics: ",
-           adapt_covariance_path, call. = FALSE)
     }
   }
 
@@ -720,10 +687,7 @@ hobbs <- function(model,
       burnin = as.integer(burnin),
       warmups = as.integer(warmups),
       adapt_until = as.integer(adapt_until),
-      adapt_covariance = adapt_covariance,
-      adapt_covariance_max_dim = adapt_covariance_max_dim,
       adaptation = adaptation_path,
-      adapt_covariance_file = adapt_covariance_path,
       target_accept = target_accept,
       step = step,
       seed = seed_arg,
@@ -783,10 +747,7 @@ hobbs <- function(model,
     burnin = as.integer(burnin),
     warmups = as.integer(warmups),
     adapt_until = as.integer(adapt_until),
-    adapt_covariance = adapt_covariance,
-    adapt_covariance_max_dim = adapt_covariance_max_dim,
     adaptation = adaptation_path,
-    adapt_covariance_file = adapt_covariance_path,
     target_accept = target_accept,
     step = step,
     seed = seed_arg,
@@ -2151,7 +2112,7 @@ generate_scalar_kernels_c <- function(param_info, block_info, cache_decls) {
     )
 
     # Compatibility ABI retained for hand-written callers and regression
-    # tests. Package-generated Rust samplers prefer hobbs_sweep_adapt_* below.
+    # tests. Package-generated Rust samplers use the fused sweeps below.
     out <- c(
       out,
       sprintf("hobbs_EXPORT double hobbs_sweep_%s(", name),
@@ -2175,13 +2136,48 @@ generate_scalar_kernels_c <- function(param_info, block_info, cache_decls) {
       ""
     )
 
+    # Frozen-scaling production sweep. Once scalar adaptation is over, the C ABI
+    # no longer needs tuning factors, warmup counters, or adaptation bounds.
+    # the C ABI. Acceptance accounting stays in C so Rust does not need a
+    # second per-coordinate pass over flags.
+    out <- c(
+      out,
+      sprintf("hobbs_EXPORT double hobbs_sweep_sample_%s(", name),
+      "    double * hobbs_RESTRICT theta,",
+      "    const double * hobbs_RESTRICT scales,",
+      "    const double * hobbs_RESTRICT normals,",
+      "    const double * hobbs_RESTRICT uniforms,",
+      "    uint64_t * hobbs_RESTRICT accept_counts,",
+      "    uint64_t *accepted_count,",
+      "    int *bad_index) {",
+      "  double delta_sum = 0.0;",
+      "  uint64_t accepted_total = 0u;",
+      "  if (accepted_count != NULL) *accepted_count = 0u;",
+      "  if (bad_index != NULL) *bad_index = 0;",
+      sprintf("  for (int local = 0; local < %d; ++local) {", len),
+      "    const int index = local + 1;",
+      sprintf("    const int position = %d + local;", offset),
+      "    unsigned char accepted = 0u;",
+      sprintf("    const double delta = hobbs_scalar_step_%s(theta, index, position, scales[local], normals[local], uniforms[local], &accepted, bad_index);", name),
+      "    if (isnan(delta)) return NAN;",
+      "    delta_sum += delta;",
+      "    if (accepted != 0u) {",
+      "      accept_counts[local] += 1u;",
+      "      accepted_total += 1u;",
+      "    }",
+      "  }",
+      "  if (accepted_count != NULL) *accepted_count = accepted_total;",
+      "  return delta_sum;",
+      "}",
+      ""
+    )
+
     out <- c(
       out,
       sprintf("hobbs_EXPORT double hobbs_sweep_adapt_%s(", name),
       "    double * hobbs_RESTRICT theta,",
       "    double * hobbs_RESTRICT scales,",
       "    double * hobbs_RESTRICT tuning_factors,",
-      "    const double * hobbs_RESTRICT covariance_shapes,",
       "    const double * hobbs_RESTRICT normals,",
       "    const double * hobbs_RESTRICT uniforms,",
       "    uint64_t * hobbs_RESTRICT accept_counts,",
@@ -2217,7 +2213,7 @@ generate_scalar_kernels_c <- function(param_info, block_info, cache_decls) {
       "      if (tuning < min_tuning) tuning = min_tuning;",
       "      else if (tuning > max_tuning) tuning = max_tuning;",
       "      tuning_factors[local] = tuning;",
-      "      double proposal_scale = initial_step * tuning * covariance_shapes[local];",
+      "      double proposal_scale = initial_step * tuning;",
       "      if (proposal_scale < min_scale) proposal_scale = min_scale;",
       "      else if (proposal_scale > max_scale) proposal_scale = max_scale;",
       "      scales[local] = proposal_scale;",
@@ -3406,9 +3402,6 @@ print.hobbs_run <- function(x, ...) {
   cat("  save:        ", x$save %||% "chain", "\n", sep = "")
   if (!is.null(x$adaptation) && !is.na(x$adaptation)) {
     cat("  adaptation:  ", x$adaptation, "\n", sep = "")
-  }
-  if (!is.null(x$adapt_covariance_file) && !is.na(x$adapt_covariance_file)) {
-    cat("  covariance:  ", x$adapt_covariance_file, "\n", sep = "")
   }
   invisible(x)
 }
