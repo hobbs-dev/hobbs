@@ -1,6 +1,6 @@
 Package: hobbs
 Type: Package
-Title: High Dimensional Bayesian Data Analysis
+Title: High dimensiOnal Bayesian omniBus Sampler
 Version: 0.3.6
 Authors@R: person("Mike", "Kleinsasser", email = "mkleinsa@umich.edu", 
     role = c("aut", "cre"))
@@ -12,5 +12,5 @@ Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.0
 SystemRequirements: Cargo (Rust's package manager), rustc, C compiler
-URL: https://github.com/hobbs/hobbs
-BugReports: https://github.com/hobbs/hobbs/issues
+URL: https://github.com/hobbs-dev/hobbs
+BugReports: https://github.com/hobbs-dev/hobbs/issues
