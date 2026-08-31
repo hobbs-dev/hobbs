@@ -585,7 +585,7 @@ static inline double dbinom_logit(unsigned int x, unsigned int size, double eta)
         + ((double)(size - x)) * hobbs_log1m_sigmoid(eta);
 }
 
-static inline double dnbinom_log(unsigned int x, double size, double prob) {
+static inline double hobbs_dnbinom_log(unsigned int x, double size, double prob) {
     if (!(size > 0.0) || prob < 0.0 || prob > 1.0) return -INFINITY;
     if (prob == 0.0) return -INFINITY;
     if (prob == 1.0) return (x == 0U) ? 0.0 : -INFINITY;
@@ -594,7 +594,7 @@ static inline double dnbinom_log(unsigned int x, double size, double prob) {
 }
 
 /* Negative-binomial with log mean eta and shape/size parameter. */
-static inline double dnbinom_log_mu(unsigned int x, double eta, double size) {
+static inline double hobbs_dnbinom_log_mu(unsigned int x, double eta, double size) {
     if (!(size > 0.0) || !isfinite(eta)) return -INFINITY;
     const double mu = hobbs_exp_eta(eta);
     return lgamma((double)x + size) - lgamma(size) - hobbs_lfactorial(x)
@@ -1184,10 +1184,10 @@ static inline double inv_logit(double eta) {
 #define bernoulli_cloglog_lpdf dbern_cloglog
 #define poisson_log_lpdf dpois_log_link
 #define binomial_logit_lpdf dbinom_logit
-#define negbinomial_lpdf dnbinom_log
-#define dnbinom_lpdf dnbinom_log
-#define negbinomial_log_lpdf dnbinom_log_mu
-#define dnbinom_log_lpdf dnbinom_log_mu
+#define negbinomial_lpdf hobbs_dnbinom_log
+#define dnbinom_lpdf hobbs_dnbinom_log
+#define negbinomial_log_lpdf hobbs_dnbinom_log_mu
+#define dnbinom_log_lpdf hobbs_dnbinom_log_mu
 #define normal01_lpdf dnorm01_log
 #define normal_sd1_lpdf dnorm_sd1_log
 
