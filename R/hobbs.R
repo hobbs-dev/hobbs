@@ -359,72 +359,305 @@ hobbs_check_sampler <- function(quiet = FALSE) {
     invisible(TRUE)
 }
 
-#' Compile a C posterior, run hobbs, and write samples
+#' Compile and sample a hobbs Bayesian model
 #'
-#' The simple model interface is:
-#' `model_name { ... }` where `model_name` is any C identifier.
-#' If no `param ...` declarations are used, the older `model_name { ... }` or `model_name(theta) { ... }` form may be used to choose the parameter-vector name. hobbs translates this
-#' to the sampler ABI, includes the helper header for you, and makes common math
-#' constants/functions such as `INFINITY`, `exp`, and `log` available without
-#' writing `#include <math.h>`. The older
-#' `double log_posterior(const double* theta, int dim)` interface and advanced
-#' ABI exports are still supported.
+#' @description
+#' `hobbs()` is the main model-fitting interface for **hobbs** (High dimensiOnal
+#' Bayesian omniBus Sampler), a probabilistic programming system designed for
+#' high-dimensional Bayesian models with sparse or structured computational
+#' dependencies. Models are written in a compact C-like language using
+#' parameter declarations, reusable code chunks, probability statements, and
+#' parameter-local sampling blocks.
 #'
-#' @param model Path to a `.c` file, or a string containing C source code.
-#'   A parameter declaration may end in `save=mean`, for example
-#'   `param u(m, 2) save=mean;`. The parameter is still sampled normally, but
-#'   only its post-burn-in mean is retained. Declarations without the suffix
-#'   retain their full post-burn-in chain. User model files may also use a
-#'   small convenience syntax for one-based ascending
-#'   loops: `for (i in 1:N)` or `for (i = 1:N)` is translated before C
-#'   compilation to `for (int i = 1; i <= N; ++i)`.
-#' @param data Optional data passed to the C model. May be a path passed to an advanced `posterior_init(const char*)`, or a named R list of numeric/integer/logical scalars, vectors, and matrices. For list data, vector lengths are exposed automatically as `<name>_len`; matrix dimensions are exposed automatically as `<name>_len`, `<name>_nrow`, and `<name>_ncol`. Vectors and matrices also get function-like indexing macros, so `y(i)` and `X(i, j)` in C are 1-based R-style accessors. Discrete parameters may be declared as `dparam z(n, 0, 1)` and are updated by finite enumeration/Gibbs in block mode.
-#' @param dim Optional number of parameters. If omitted, hobbs first uses any `param name(k)` or `param name(n,m)` declarations in the C model, then looks for an explicit scalar in `data` named `dim`, `theta_dim`, `npar`, `n_params`, or `param_dim`.
-#' @param samples Number of post-burn-in samples to save. Default 1000.
-#' @param burnin Number of burn-in iterations. Default 500.
-#' @param warmups Optional alias for `burnin`. When supplied, do not also supply
-#'   `burnin`; adaptation defaults to this many iterations.
-#' @param adapt_until Last iteration at which to adapt. Default equals the
-#'   effective warmup length (`warmups` when supplied, otherwise `burnin`).
-#' @param out Output path. Default `chain.bin` in `workdir`.
-#' @param workdir Working directory for generated files.
-#' @param binary Optional path to an existing hobbs executable.
-#' @param eval Evaluation mode: `auto`, `scalar`, or `batch`.
-#' @param format Output format: `bin` or `csv`.
-#' @param save Global output mode. `chain` honors declaration-level
-#'   `save=mean` suffixes and otherwise writes full post-burn-in draws. `mean`
-#'   retains only posterior means for every parameter (the legacy all-parameter
-#'   mean mode).
-#' @param update Update mode: `global` evaluates the full target for each
-#'   one-coordinate proposal; `block` evaluates user-defined scalar local targets. A declaration
-#'   such as `block beta(j) { ... }` is called once for every coordinate of
-#'   `beta` on every sweep; grouped/multivariate proposals are not used.
-#' @param rows_by Optional named list for indexed block helpers. `rows_by = list(ability = ability_idx)` creates `ability_nrows(p)` and `ability_row(p, ii)` in C.
-#' @param no_output Logical. If TRUE, benchmark without writing output.
-#' @param step Initial proposal step scale.
-#' @param adapt_every Retained for backward compatibility. Scalar
-#'   Robbins-Monro adaptation updates every warmup sweep.
-#' @param target_accept Target Metropolis acceptance rate. If NULL, defaults to
-#'   0.44 because both update modes make one-dimensional random-walk proposals.
-#' @param seed RNG seed.
-#' @param thin Save every `thin`th post-burn-in draw.
-#' @param quiet Logical. If TRUE, suppress command output.
-#' @param rebuild_sampler Logical. If TRUE, rebuild bundled Rust sampler.
-#' @param compiler Optional C compiler command.
-#' @param cflags Optional compiler flags.
-#' @param log_cache Logical. If TRUE, replace C `log(x)` calls with a
-#'   precomputed lookup-table approximation. This can speed log-heavy models,
-#'   but it changes log evaluations slightly.
-#' @param log_cache_bits Integer. When `log_cache = TRUE`, allocate `2^bits`
-#'   lookup values for the mantissa table. The default, 8, uses about 2 KB;
-#'   larger values improve the optional approximation at the cost of cache
+#' The R front end translates the model and R data into optimized C code and
+#' compiles it as a shared library. A reusable Rust runtime then performs the
+#' MCMC sweeps, proposal adaptation, output, and diagnostics. In block mode,
+#' model-specific posterior calculations and deterministic cache updates remain
+#' in generated C so that each scalar proposal can perform only the work that
+#' its dependency structure requires.
+#'
+#' @details
+#' The preferred interface declares model parameters directly in the model
+#' source with `param` for continuous parameters and `dparam` for bounded
+#' discrete parameters. Parameter and data accessors use one-based indexing,
+#' matching R. For example, `param beta(p);` creates `beta(1)`, ..., `beta(p)`,
+#' and a matrix supplied as `X` in `data` can be read as `X(i, j)`.
+#'
+#' Probability statements have the form
+#' `value ~ distribution(arguments);` and add the corresponding log density or
+#' log probability to the current block target. Repeated calculations can be
+#' placed in `func name() { ... }` declarations. These are reusable code chunks
+#' that are expanded at their call sites before C compilation, so they can use
+#' indices and local declarations from the surrounding block. Ordinary C
+#' expressions, scalar declarations, loops, conditionals, transformations, and
+#' direct additions to `target` can also be used. Temporary `vec` and `mat`
+#' declarations are available for vector and matrix calculations used by
+#' multivariate distributions.
+#'
+#' @section Toolchain:
+#' hobbs models are compiled at run time. A working C compiler and Rust with
+#' Cargo are therefore required. Use [hobbs_check_toolchain()] to diagnose the
+#' local toolchain, [hobbs_install_sampler()] to build the bundled Rust sampler
+#' into the user cache, and [hobbs_check_sampler()] to verify that the cached
+#' sampler starts correctly. `hobbs()` builds or reuses the bundled sampler
+#' automatically when `binary = NULL`.
+#'
+#' @section Parameter-local blocks:
+#' A declaration such as
+#'
+#' ```
+#' block beta(j) {
+#'   beta(j) ~ dnorm(0, 10);
+#'   llk();
+#' }
+#' ```
+#'
+#' creates one scalar update for each coordinate of `beta`. The block need not
+#' evaluate the complete log posterior. It should evaluate exactly the prior,
+#' likelihood, and other posterior terms whose values can change when that
+#' coordinate changes. Terms that do not depend on the proposed coordinate may
+#' be omitted because they cancel from the Metropolis-Hastings ratio.
+#'
+#' This is an exact computation, not an approximation, provided that every
+#' posterior contribution affected by the proposal is included. A `block` is
+#' therefore both a sampling declaration and an explicit dependency contract.
+#' This lets grouped, sparse, latent-variable, and variable-selection models
+#' restrict work to the observations or terms actually affected by a proposal.
+#'
+#' Continuous coordinates use sequential scalar Gaussian random-walk
+#' Metropolis updates. Bounded discrete coordinates declared with, for example,
+#' `dparam z(n, 0, 1);` are updated by evaluating their local block target over
+#' every value in the declared support and drawing from the resulting
+#' finite-state conditional distribution.
+#'
+#' @section Persistent deterministic caches:
+#' A block can maintain exact deterministic state with attached `cache` and
+#' `update` declarations. For example, a cached linear predictor can be
+#' initialized once and updated after a proposal to `beta(j)` using
+#'
+#' ```
+#' mu(i) += (proposal(beta(j)) - current(beta(j))) * X(i, j);
+#' ```
+#'
+#' `proposal(...)` is the proposed scalar value and `current(...)` is the
+#' currently accepted value. Cache updates are transactional: the proposed
+#' parameter and updated cache are used together to evaluate the block target;
+#' on rejection, hobbs restores the previous cache automatically. A cache can
+#' be maintained by multiple blocks. Correctness requires that its initializer
+#' and every attached update keep the cached quantity algebraically consistent
+#' with the current parameter state.
+#'
+#' Persistent deterministic caches are exact and are distinct from the optional
+#' lookup-table approximation controlled by `log_cache`.
+#'
+#' @section Sampling and adaptation:
+#' Each continuous coordinate is attempted once per sweep. During warmup,
+#' hobbs adapts a coordinate-specific Gaussian random-walk proposal scale using
+#' Robbins-Monro stochastic approximation. By default the target acceptance
+#' probability is `0.44`, appropriate for the one-dimensional proposals used by
+#' the sampler. Adaptation normally continues through the warmup period and the
+#' resulting scales are then fixed for retained sampling. Discrete finite-state
+#' Gibbs updates do not require proposal-scale adaptation.
+#'
+#' `warmups` is the preferred name for the discarded warmup length; `burnin` is
+#' retained for compatibility. Supply only one of them. `adapt_until` can be
+#' used to control the last adaptation iteration explicitly.
+#'
+#' @section Output and high-dimensional storage:
+#' By default, retained draws are written to a binary chain and can be read with
+#' [read_hobbs()]. A parameter declaration can include `save=mean`, for example
+#' `param u(m, 2) save=mean;`. The parameter remains part of the Markov state and
+#' is sampled normally, but only its post-warmup posterior mean is retained.
+#' This separates the dimension of the sampled state from the dimension of the
+#' stored chain and can greatly reduce storage for large nuisance parameter
+#' arrays. Mean-only parameters do not retain information needed for posterior
+#' quantiles or convergence diagnostics; use [read_hobbs_mean()] to read their
+#' saved means when mixed with full-chain parameters.
+#'
+#' The returned `hobbs_run` object records the generated source and shared
+#' library, output paths, model dimensions and parameter names, block metadata,
+#' adaptation diagnostics, proposal settings, and process status. It can be
+#' passed directly to [read_hobbs()].
+#'
+#' @section Built-in probability statements:
+#' Sampling statements currently include scalar continuous distributions
+#' `dnorm`, `normal01`, `normal_sd1`, `dunif`, `dexp`, `dgamma`, `dinvgamma`,
+#' `dbeta`, `dcauchy`, `dt`, `dchisq`, `dlnorm`, `dlogis`, `dlaplace`,
+#' `dweibull`, `dpareto`, `dhalfnorm`, and `dhalfcauchy`; discrete and linked
+#' distributions `dbern`, `bernoulli_logit`, `bernoulli_probit`,
+#' `bernoulli_cloglog`, `dbinom`, `binomial_logit`, `dpois`, `poisson_log`,
+#' `dnbinom`, and `dnbinom_log`; and multivariate/matrix distributions `dbvn`,
+#' `dmvn`, `dwish`, `dinvwish`, and `dlkjcorr2`.
+#'
+#' Built-in distributions do not limit the models that can be expressed.
+#' Model-specific log-density calculations may be placed in a `func` chunk and
+#' added directly to `target` using ordinary C expressions.
+#'
+#' @section Optional distribution lookup cache:
+#' Setting `log_cache = TRUE` enables an optional lookup-table approximation for
+#' selected repeated elementary calculations. Unlike persistent deterministic
+#' caches, this can perturb the numerical log target slightly and is therefore
+#' disabled by default. `log_cache_bits` controls table resolution and the
+#' associated memory/speed tradeoff. Use this option only when its approximation
+#' is acceptable for the application.
+#'
+#' @section Legacy and advanced interfaces:
+#' Models using the older `model_name { ... }`, `model_name(theta) { ... }`, or
+#' `double log_posterior(const double* theta, int dim)` interfaces remain
+#' supported. Advanced model files may also export the sampler ABI directly.
+#' The modern declaration/block interface is recommended for new models because
+#' it exposes parameter names, dimensions, local dependency structure, discrete
+#' support, caches, and declaration-level output control to hobbs.
+#'
+#' @param model A character string containing hobbs model source or a path to a
+#'   `.c` model file. Modern model source can contain `param` and `dparam`
+#'   declarations, `func` chunks, `block` declarations, probability statements,
+#'   and attached `cache`/`update` declarations. A continuous declaration may
+#'   end in `save=mean` to retain only its post-warmup mean. One-based ascending
+#'   loops written as `for (i in 1:N)` or `for (i = 1:N)` are translated to C
+#'   loops before compilation.
+#' @param dim Optional total parameter dimension. Normally inferred from `param`
+#'   and `dparam` declarations. For legacy models without declarations, hobbs
+#'   also looks for a scalar in `data` named `dim`, `theta_dim`, `npar`,
+#'   `n_params`, or `param_dim`.
+#' @param data Optional model data. Usually a named R list containing numeric,
+#'   integer, or logical scalars, vectors, and matrices. Scalars are exposed by
+#'   name; vectors and matrices receive one-based function-like accessors such
+#'   as `y(i)` and `X(i, j)`. Vector lengths are exposed as `<name>_len`; matrix
+#'   dimensions are exposed as `<name>_len`, `<name>_nrow`, and `<name>_ncol`.
+#'   Advanced models may instead supply a path consumed by
+#'   `posterior_init(const char*)`.
+#' @param samples Number of retained post-warmup samples to save. Default
+#'   `1000`.
+#' @param burnin Number of discarded warmup iterations. Default `500`.
+#'   `warmups` is the preferred alias; do not supply both.
+#' @param adapt_until Last iteration at which continuous proposal scales are
+#'   adapted. By default this equals the effective warmup length.
+#' @param out Output path. By default, `chain.bin` in `workdir`. When
+#'   `save = "mean"` and `out` is omitted, the default becomes
+#'   `posterior_mean.csv`.
+#' @param workdir Working directory used for generated model source, data
+#'   bindings, compiled libraries, and other temporary build products. Defaults
+#'   to [tempdir()].
+#' @param binary Optional path to an existing hobbs Rust sampler executable.
+#'   When `NULL`, the bundled sampler is built or reused from the hobbs user
+#'   cache.
+#' @param eval Evaluation mode for legacy/full-posterior interfaces: one of
+#'   `"auto"`, `"scalar"`, or `"batch"`. The default automatically uses an
+#'   available evaluation export.
+#' @param format Retained-chain output format, either `"bin"` or `"csv"`.
+#'   Binary output is the default and is recommended for large chains.
+#' @param save Global storage mode. `"chain"` retains full draws except for
+#'   declarations marked `save=mean`; `"mean"` retains posterior means for all
+#'   parameters and is the legacy all-parameter mean mode.
+#' @param update Update mode. `"block"` (the default) uses parameter-local
+#'   scalar blocks and their attached cache updates. `"global"` performs
+#'   one-coordinate proposals against a full-posterior evaluation.
+#' @param rows_by Optional named list defining indexed row maps for local blocks.
+#'   For example, `rows_by = list(ability = ability_idx)` creates
+#'   `ability_nrows(p)` and `ability_row(p, ii)` accessors in generated C. This
+#'   is useful when a parameter coordinate affects an irregular subset of rows.
+#' @param no_output Logical. If `TRUE`, run the sampler without writing retained
+#'   output, primarily for benchmarking.
+#' @param step Positive initial Gaussian random-walk proposal scale for
+#'   continuous coordinates. Default `0.25`; coordinate-specific scales are
+#'   adapted during warmup.
+#' @param adapt_every Retained for backward compatibility. Scalar Robbins-Monro
+#'   adaptation is performed every warmup sweep.
+#' @param target_accept Target acceptance probability for continuous scalar
+#'   Metropolis proposals. If `NULL`, defaults to `0.44`.
+#' @param seed RNG seed. A numeric seed may be any exactly representable whole
+#'   number from 0 through `2^53 - 1`; a decimal character string may be used
+#'   for the full unsigned 64-bit seed range.
+#' @param thin Save every `thin`th post-warmup draw. Default `1`.
+#' @param quiet Logical. If `TRUE`, suppress sampler/build command output.
+#' @param rebuild_sampler Logical. If `TRUE`, force a rebuild of the bundled
+#'   Rust sampler before running the model.
+#' @param compiler Optional C compiler command. By default hobbs detects a
+#'   suitable compiler from the system toolchain.
+#' @param cflags Optional character vector or string of additional C compiler
+#'   flags used when compiling the generated model.
+#' @param log_cache Logical. If `TRUE`, enable the optional lookup-table
+#'   approximation for selected repeated log/distribution calculations. Default
+#'   `FALSE` because this can slightly perturb the log target.
+#' @param log_cache_bits Integer table-resolution setting used when
+#'   `log_cache = TRUE`. The default `8` allocates `2^8` mantissa lookup values
+#'   (about 2 KB for the log table). Larger values increase resolution and cache
 #'   footprint.
-#' @return Invisibly, an `hobbs_run` list containing paths and process status.
-#'   `chain_output` is the full-draw file for unmarked parameters and
-#'   `mean_output` is the one-record binary for declarations marked
-#'   `save=mean`. In block mode, `adaptation` points to per-coordinate proposal
-#'   diagnostics.
+#' @param warmups Optional preferred alias for `burnin`. When supplied, do not
+#'   also supply `burnin`. If `adapt_until` is omitted, adaptation defaults to
+#'   the same number of iterations.
+#'
+#' @return Invisibly returns an object of class `hobbs_run`. Important elements
+#'   include `output`, `chain_output`, and `mean_output`; generated model paths
+#'   (`model_c`, `user_model_c`, `model_lib`); parameter dimensions and names;
+#'   `samples`, `warmups`, and `adapt_until`; block and adaptation metadata; and
+#'   the process `status`. Full-chain and mean-only outputs can be read with
+#'   [read_hobbs()] and [read_hobbs_mean()], respectively.
+#'
+#' @seealso [read_hobbs()], [read_hobbs_mean()], [hobbs_check_toolchain()],
+#'   [hobbs_install_sampler()], [hobbs_check_sampler()]
+#'
+#' @examples
+#' \dontrun{
+#' library(hobbs)
+#'
+#' set.seed(1)
+#' n <- 200L
+#' p <- 4L
+#' X <- cbind(1, matrix(rnorm(n * (p - 1L)), nrow = n))
+#' beta_true <- c(0.5, 1, -0.75, 0.25)
+#' sigma_true <- 0.75
+#' y <- as.numeric(X %*% beta_true + rnorm(n, sd = sigma_true))
+#'
+#' dat <- list(n = n, p = p, X = X, y = y)
+#'
+#' model <- '
+#' param beta(p);
+#' param logsigma(1);
+#'
+#' func llk() {
+#'   double sigma = exp(logsigma(1));
+#'   for (i = 1:n) {
+#'     y(i) ~ dnorm(mu(i), sigma);
+#'   }
+#' }
+#'
+#' block beta(j) {
+#'   beta(j) ~ dnorm(0, 10);
+#'   llk();
+#' } cache mu(n) {
+#'   for (i = 1:n) {
+#'     for (k = 1:p) {
+#'       mu(i) += beta(k) * X(i, k);
+#'     }
+#'   }
+#' } update mu(n) {
+#'   for (i = 1:n) {
+#'     mu(i) += (proposal(beta(j)) - current(beta(j))) * X(i, j);
+#'   }
+#' }
+#'
+#' block logsigma(1) {
+#'   logsigma(1) ~ dnorm(0, 2);
+#'   llk();
+#' }
+#' '
+#'
+#' fit <- hobbs(
+#'   model = model,
+#'   data = dat,
+#'   samples = 2000,
+#'   warmups = 1000,
+#'   seed = 123,
+#'   out = "regression.bin"
+#' )
+#'
+#' draws <- read_hobbs(fit)
+#' colMeans(draws[paste0("beta[", seq_len(p), "]")])
+#' }
 #' @export
+
 hobbs <- function(model,
                     dim = NULL,
                     data = NULL,
