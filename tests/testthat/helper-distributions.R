@@ -6,8 +6,7 @@ skip_if_hobbs_toolchain_missing <- function() {
 }
 
 hobbs_test_draws <- function(model, data = list(), seed = 4401L,
-                             samples = 3000L, burnin = 1500L,
-                             step = 0.25) {
+                             samples = 3000L, burnin = 1500L) {
   skip_if_hobbs_toolchain_missing()
   if (is.null(data$n) && length(data)) {
     first <- data[[1L]]
@@ -24,10 +23,7 @@ hobbs_test_draws <- function(model, data = list(), seed = 4401L,
     burnin = burnin,
     workdir = wd,
     out = file.path(wd, "chain.bin"),
-    update = "block",
-    step = step,
-    seed = seed,
-    quiet = TRUE
+    seed = seed
   )
   read_hobbs(fit$chain_output)
 }

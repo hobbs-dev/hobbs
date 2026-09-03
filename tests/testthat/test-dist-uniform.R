@@ -5,7 +5,7 @@ block mu(1) {
 mu(1) ~ dnorm(0, 3);
 for (i = 1:n) y(i) ~ dunif(mu(1) - 1.0, mu(1) + 1.0);
 }'
-  d <- hobbs_test_draws(model, list(y = y), step = 0.08); expect_posterior_near(d, "mu[1]", truth, 0.12)
+  d <- hobbs_test_draws(model, list(y = y)); expect_posterior_near(d, "mu[1]", truth, 0.12)
 })
 
 test_that("dunif gives the correct posterior for a centered location", {
@@ -19,7 +19,7 @@ mu(1) ~ dnorm(0, 3);
 for (i = 1:n) y(i) ~ dunif(mu(1) - 1.0, mu(1) + 1.0);
 }'
 
-  d <- hobbs_test_draws(model, list(y = y), step = 0.08)
+  d <- hobbs_test_draws(model, list(y = y))
 
   log_posterior <- function(mu) {
     if (any(y < mu - 1) || any(y > mu + 1)) return(-Inf)

@@ -6,126 +6,47 @@
 \usage{
 hobbs(
   model,
-  dim = NULL,
   data = NULL,
   samples = 1000L,
   burnin = 500L,
-  adapt_until = burnin,
   out = file.path(workdir, "chain.bin"),
   workdir = tempdir(),
-  binary = NULL,
-  eval = c("auto", "scalar", "batch"),
-  format = c("bin", "csv"),
-  save = c("chain", "mean"),
-  update = c("block", "global"),
-  rows_by = NULL,
-  no_output = FALSE,
-  step = 0.25,
-  adapt_every = 25L,
-  target_accept = NULL,
   seed = 123456789,
-  thin = 1L,
-  quiet = FALSE,
-  rebuild_sampler = FALSE,
-  compiler = NULL,
-  cflags = NULL,
   log_cache = FALSE,
-  log_cache_bits = 8L,
-  warmups = NULL
+  log_cache_bits = 8L
 )
 }
 \arguments{
 \item{model}{A character string containing hobbs model source or a path to a
-\code{.c} model file. Modern model source can contain \code{param} and \code{dparam}
+\code{.c} model file. Model source can contain \code{param} and \code{dparam}
 declarations, \code{func} chunks, \code{block} declarations, probability statements,
 and attached \code{cache}/\code{update} declarations. A continuous declaration may
-end in \code{save=mean} to retain only its post-warmup mean. One-based ascending
+end in \code{save=mean} to retain only its post-burn-in mean. One-based ascending
 loops written as \verb{for (i in 1:N)} or \verb{for (i = 1:N)} are translated to C
 loops before compilation.}
 
-\item{dim}{Optional total parameter dimension. Normally inferred from \code{param}
-and \code{dparam} declarations. For legacy models without declarations, hobbs
-also looks for a scalar in \code{data} named \code{dim}, \code{theta_dim}, \code{npar},
-\code{n_params}, or \code{param_dim}.}
-
-\item{data}{Optional model data. Usually a named R list containing numeric,
-integer, or logical scalars, vectors, and matrices. Scalars are exposed by
+\item{data}{Optional named list containing model data. Numeric, integer, and
+logical scalars, vectors, and matrices are supported. Scalars are exposed by
 name; vectors and matrices receive one-based function-like accessors such
 as \code{y(i)} and \code{X(i, j)}. Vector lengths are exposed as \verb{<name>_len}; matrix
-dimensions are exposed as \verb{<name>_len}, \verb{<name>_nrow}, and \verb{<name>_ncol}.
-Advanced models may instead supply a path consumed by
-\verb{posterior_init(const char*)}.}
+dimensions are exposed as \verb{<name>_len}, \verb{<name>_nrow}, and \verb{<name>_ncol}.}
 
-\item{samples}{Number of retained post-warmup samples to save. Default
+\item{samples}{Number of retained post-burn-in samples to save. Default
 \code{1000}.}
 
-\item{burnin}{Number of discarded warmup iterations. Default \code{500}.
-\code{warmups} is the preferred alias; do not supply both.}
+\item{burnin}{Number of discarded burn-in iterations. Proposal adaptation is
+performed throughout burn-in. Default \code{500}.}
 
-\item{adapt_until}{Last iteration at which continuous proposal scales are
-adapted. By default this equals the effective warmup length.}
-
-\item{out}{Output path. By default, \code{chain.bin} in \code{workdir}. When
-\code{save = "mean"} and \code{out} is omitted, the default becomes
-\code{posterior_mean.csv}.}
+\item{out}{Output path for the retained binary chain. Defaults to
+\code{chain.bin} in \code{workdir}.}
 
 \item{workdir}{Working directory used for generated model source, data
 bindings, compiled libraries, and other temporary build products. Defaults
 to \code{\link[=tempdir]{tempdir()}}.}
 
-\item{binary}{Optional path to an existing hobbs Rust sampler executable.
-When \code{NULL}, the bundled sampler is built or reused from the hobbs user
-cache.}
-
-\item{eval}{Evaluation mode for legacy/full-posterior interfaces: one of
-\code{"auto"}, \code{"scalar"}, or \code{"batch"}. The default automatically uses an
-available evaluation export.}
-
-\item{format}{Retained-chain output format, either \code{"bin"} or \code{"csv"}.
-Binary output is the default and is recommended for large chains.}
-
-\item{save}{Global storage mode. \code{"chain"} retains full draws except for
-declarations marked \code{save=mean}; \code{"mean"} retains posterior means for all
-parameters and is the legacy all-parameter mean mode.}
-
-\item{update}{Update mode. \code{"block"} (the default) uses parameter-local
-scalar blocks and their attached cache updates. \code{"global"} performs
-one-coordinate proposals against a full-posterior evaluation.}
-
-\item{rows_by}{Optional named list defining indexed row maps for local blocks.
-For example, \code{rows_by = list(ability = ability_idx)} creates
-\code{ability_nrows(p)} and \code{ability_row(p, ii)} accessors in generated C. This
-is useful when a parameter coordinate affects an irregular subset of rows.}
-
-\item{no_output}{Logical. If \code{TRUE}, run the sampler without writing retained
-output, primarily for benchmarking.}
-
-\item{step}{Positive initial Gaussian random-walk proposal scale for
-continuous coordinates. Default \code{0.25}; coordinate-specific scales are
-adapted during warmup.}
-
-\item{adapt_every}{Retained for backward compatibility. Scalar Robbins-Monro
-adaptation is performed every warmup sweep.}
-
-\item{target_accept}{Target acceptance probability for continuous scalar
-Metropolis proposals. If \code{NULL}, defaults to \code{0.44}.}
-
 \item{seed}{RNG seed. A numeric seed may be any exactly representable whole
 number from 0 through \code{2^53 - 1}; a decimal character string may be used
 for the full unsigned 64-bit seed range.}
-
-\item{thin}{Save every \code{thin}th post-warmup draw. Default \code{1}.}
-
-\item{quiet}{Logical. If \code{TRUE}, suppress sampler/build command output.}
-
-\item{rebuild_sampler}{Logical. If \code{TRUE}, force a rebuild of the bundled
-Rust sampler before running the model.}
-
-\item{compiler}{Optional C compiler command. By default hobbs detects a
-suitable compiler from the system toolchain.}
-
-\item{cflags}{Optional character vector or string of additional C compiler
-flags used when compiling the generated model.}
 
 \item{log_cache}{Logical. If \code{TRUE}, enable the optional lookup-table
 approximation for selected repeated log/distribution calculations. Default
@@ -135,18 +56,11 @@ approximation for selected repeated log/distribution calculations. Default
 \code{log_cache = TRUE}. The default \code{8} allocates \code{2^8} mantissa lookup values
 (about 2 KB for the log table). Larger values increase resolution and cache
 footprint.}
-
-\item{warmups}{Optional preferred alias for \code{burnin}. When supplied, do not
-also supply \code{burnin}. If \code{adapt_until} is omitted, adaptation defaults to
-the same number of iterations.}
 }
 \value{
-Invisibly returns an object of class \code{hobbs_run}. Important elements
-include \code{output}, \code{chain_output}, and \code{mean_output}; generated model paths
-(\code{model_c}, \code{user_model_c}, \code{model_lib}); parameter dimensions and names;
-\code{samples}, \code{warmups}, and \code{adapt_until}; block and adaptation metadata; and
-the process \code{status}. Full-chain and mean-only outputs can be read with
-\code{\link[=read_hobbs]{read_hobbs()}} and \code{\link[=read_hobbs_mean]{read_hobbs_mean()}}, respectively.
+Invisibly returns an object of class \code{hobbs_run}. It can be passed to
+\code{\link[=read_hobbs]{read_hobbs()}} to read retained draws and to \code{\link[=read_hobbs_mean]{read_hobbs_mean()}} when the
+model contains parameters declared with \code{save=mean}.
 }
 \description{
 \code{hobbs()} is the main model-fitting interface for \strong{hobbs} (High dimensiOnal
@@ -243,17 +157,12 @@ lookup-table approximation controlled by \code{log_cache}.
 
 \section{Sampling and adaptation}{
 
-Each continuous coordinate is attempted once per sweep. During warmup,
+Each continuous coordinate is attempted once per sweep. During burn-in,
 hobbs adapts a coordinate-specific Gaussian random-walk proposal scale using
-Robbins-Monro stochastic approximation. By default the target acceptance
-probability is \code{0.44}, appropriate for the one-dimensional proposals used by
-the sampler. Adaptation normally continues through the warmup period and the
-resulting scales are then fixed for retained sampling. Discrete finite-state
-Gibbs updates do not require proposal-scale adaptation.
-
-\code{warmups} is the preferred name for the discarded warmup length; \code{burnin} is
-retained for compatibility. Supply only one of them. \code{adapt_until} can be
-used to control the last adaptation iteration explicitly.
+Robbins-Monro stochastic approximation with target acceptance probability
+\code{0.44}. Adaptation ends with burn-in and the resulting scales are fixed for
+retained sampling. Discrete finite-state Gibbs updates do not require
+proposal-scale adaptation.
 }
 
 \section{Output and high-dimensional storage}{
@@ -261,7 +170,7 @@ used to control the last adaptation iteration explicitly.
 By default, retained draws are written to a binary chain and can be read with
 \code{\link[=read_hobbs]{read_hobbs()}}. A parameter declaration can include \code{save=mean}, for example
 \verb{param u(m, 2) save=mean;}. The parameter remains part of the Markov state and
-is sampled normally, but only its post-warmup posterior mean is retained.
+is sampled normally, but only its post-burn-in posterior mean is retained.
 This separates the dimension of the sampled state from the dimension of the
 stored chain and can greatly reduce storage for large nuisance parameter
 arrays. Mean-only parameters do not retain information needed for posterior
@@ -270,8 +179,8 @@ saved means when mixed with full-chain parameters.
 
 The returned \code{hobbs_run} object records the generated source and shared
 library, output paths, model dimensions and parameter names, block metadata,
-adaptation diagnostics, proposal settings, and process status. It can be
-passed directly to \code{\link[=read_hobbs]{read_hobbs()}}.
+adaptation diagnostics, and process status. It can be passed directly to
+\code{\link[=read_hobbs]{read_hobbs()}}.
 }
 
 \section{Built-in probability statements}{
@@ -350,7 +259,7 @@ fit <- hobbs(
   model = model,
   data = dat,
   samples = 2000,
-  warmups = 1000,
+  burnin = 1000,
   seed = 123,
   out = "regression.bin"
 )
