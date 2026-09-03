@@ -4,3 +4,4 @@
 ^\.claude$
 ^inst/hobbs/target$
 ^.*\.DS_Store$
+^inst/hobbs/\.cargo($|/)

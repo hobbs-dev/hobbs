@@ -501,14 +501,6 @@ hobbs_check_sampler <- function(quiet = FALSE) {
 #' associated memory/speed tradeoff. Use this option only when its approximation
 #' is acceptable for the application.
 #'
-#' @section Legacy and advanced interfaces:
-#' Models using the older `model_name { ... }`, `model_name(theta) { ... }`, or
-#' `double log_posterior(const double* theta, int dim)` interfaces remain
-#' supported. Advanced model files may also export the sampler ABI directly.
-#' The modern declaration/block interface is recommended for new models because
-#' it exposes parameter names, dimensions, local dependency structure, discrete
-#' support, caches, and declaration-level output control to hobbs.
-#'
 #' @param model A character string containing hobbs model source or a path to a
 #'   `.c` model file. Modern model source can contain `param` and `dparam`
 #'   declarations, `func` chunks, `block` declarations, probability statements,

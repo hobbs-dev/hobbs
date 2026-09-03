@@ -300,16 +300,6 @@ associated memory/speed tradeoff. Use this option only when its approximation
 is acceptable for the application.
 }
 
-\section{Legacy and advanced interfaces}{
-
-Models using the older \verb{model_name \{ ... \}}, \verb{model_name(theta) \{ ... \}}, or
-\verb{double log_posterior(const double* theta, int dim)} interfaces remain
-supported. Advanced model files may also export the sampler ABI directly.
-The modern declaration/block interface is recommended for new models because
-it exposes parameter names, dimensions, local dependency structure, discrete
-support, caches, and declaration-level output control to hobbs.
-}
-
 \examples{
 \dontrun{
 library(hobbs)
