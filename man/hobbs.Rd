@@ -21,8 +21,11 @@ hobbs(
 \code{.c} model file. Model source can contain \code{param} and \code{dparam}
 declarations, \code{func} chunks, \code{block} declarations, probability statements,
 and attached \code{cache}/\code{update} declarations. A continuous declaration may
-end in \code{save=mean} to retain only its post-burn-in mean. One-based ascending
-loops written as \verb{for (i in 1:N)} or \verb{for (i = 1:N)} are translated to C
+include \code{sampler=rwmh} (the default) or \code{sampler=slice}, independently of
+the optional \code{save=mean} output modifier. For example,
+\verb{param u(n, p) save=mean sampler=slice;} uses slice sampling while retaining
+only the posterior mean. One-based ascending loops written as
+\verb{for (i in 1:N)} or \verb{for (i = 1:N)} are translated to C
 loops before compilation.}
 
 \item{data}{Optional named list containing model data. Numeric, integer, and
@@ -34,8 +37,8 @@ dimensions are exposed as \verb{<name>_len}, \verb{<name>_nrow}, and \verb{<name
 \item{samples}{Number of retained post-burn-in samples to save. Default
 \code{1000}.}
 
-\item{burnin}{Number of discarded burn-in iterations. Proposal adaptation is
-performed throughout burn-in. Default \code{500}.}
+\item{burnin}{Number of discarded burn-in iterations. RWMH proposal scales
+and slice widths are adapted throughout burn-in, then frozen. Default \code{500}.}
 
 \item{out}{Output path for the retained binary chain. Defaults to
 \code{chain.bin} in \code{workdir}.}
@@ -72,9 +75,9 @@ parameter-local sampling blocks.
 
 The R front end translates the model and R data into optimized C code and
 compiles it as a shared library. A reusable Rust runtime then performs the
-MCMC sweeps, proposal adaptation, output, and diagnostics. In block mode,
+MCMC sweeps, sampler adaptation, output, and diagnostics. In block mode,
 model-specific posterior calculations and deterministic cache updates remain
-in generated C so that each scalar proposal can perform only the work that
+in generated C so that each scalar update can perform only the work that
 its dependency structure requires.
 }
 \details{
@@ -82,7 +85,11 @@ The preferred interface declares model parameters directly in the model
 source with \code{param} for continuous parameters and \code{dparam} for bounded
 discrete parameters. Parameter and data accessors use one-based indexing,
 matching R. For example, \verb{param beta(p);} creates \code{beta(1)}, ..., \code{beta(p)},
-and a matrix supplied as \code{X} in \code{data} can be read as \code{X(i, j)}.
+and a matrix supplied as \code{X} in \code{data} can be read as \code{X(i, j)}. Continuous
+declarations use \code{sampler=rwmh} by default and can instead request scalar
+slice sampling with \code{sampler=slice}, e.g. \verb{param u(n, p) sampler=slice;}.
+The sampler modifier is declaration-local, so RWMH and slice parameters can
+be mixed in the same model.
 
 Probability statements have the form
 \code{value ~ distribution(arguments);} and add the corresponding log density or
@@ -118,19 +125,21 @@ A declaration such as
 creates one scalar update for each coordinate of \code{beta}. The block need not
 evaluate the complete log posterior. It should evaluate exactly the prior,
 likelihood, and other posterior terms whose values can change when that
-coordinate changes. Terms that do not depend on the proposed coordinate may
-be omitted because they cancel from the Metropolis-Hastings ratio.
+coordinate changes. Terms that do not depend on the active coordinate may be
+omitted because they are constant in that coordinate's conditional target.
 
 This is an exact computation, not an approximation, provided that every
-posterior contribution affected by the proposal is included. A \code{block} is
+posterior contribution affected by the update is included. A \code{block} is
 therefore both a sampling declaration and an explicit dependency contract.
 This lets grouped, sparse, latent-variable, and variable-selection models
-restrict work to the observations or terms actually affected by a proposal.
+restrict work to the observations or terms actually affected by an update.
 
-Continuous coordinates use sequential scalar Gaussian random-walk
-Metropolis updates. Bounded discrete coordinates declared with, for example,
-\verb{dparam z(n, 0, 1);} are updated by evaluating their local block target over
-every value in the declared support and drawing from the resulting
+Continuous coordinates use sequential scalar Gaussian random-walk Metropolis
+updates by default. Adding \code{sampler=slice} to a continuous parameter
+declaration selects a stepping-out/shrinkage slice update for every scalar
+coordinate in that declaration. Bounded discrete coordinates declared with,
+for example, \verb{dparam z(n, 0, 1);} are updated by evaluating their local block
+target over every value in the declared support and drawing from the resulting
 finite-state conditional distribution.
 }
 
@@ -157,12 +166,15 @@ lookup-table approximation controlled by \code{log_cache}.
 
 \section{Sampling and adaptation}{
 
-Each continuous coordinate is attempted once per sweep. During burn-in,
-hobbs adapts a coordinate-specific Gaussian random-walk proposal scale using
-Robbins-Monro stochastic approximation with target acceptance probability
-\code{0.44}. Adaptation ends with burn-in and the resulting scales are fixed for
-retained sampling. Discrete finite-state Gibbs updates do not require
-proposal-scale adaptation.
+Each continuous coordinate is updated once per sweep using the sampler named
+in its parameter declaration. \code{sampler=rwmh} uses the existing adaptive
+Gaussian random-walk Metropolis kernel with a coordinate-specific
+Robbins-Monro scale and target acceptance probability \code{0.44}.
+\code{sampler=slice} uses univariate slice sampling with randomized stepping out
+and interval shrinkage. Slice widths start at \code{1} and adapt from observed
+scalar jump distances during burn-in only; the widths are frozen for retained
+sampling. Bounded discrete parameters continue to use exact finite-state
+Gibbs updates. All three update types can coexist in one model.
 }
 
 \section{Output and high-dimensional storage}{

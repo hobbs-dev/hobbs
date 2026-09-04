@@ -371,17 +371,21 @@ hobbs_check_sampler <- function(quiet = FALSE) {
 #'
 #' The R front end translates the model and R data into optimized C code and
 #' compiles it as a shared library. A reusable Rust runtime then performs the
-#' MCMC sweeps, proposal adaptation, output, and diagnostics. In block mode,
+#' MCMC sweeps, sampler adaptation, output, and diagnostics. In block mode,
 #' model-specific posterior calculations and deterministic cache updates remain
-#' in generated C so that each scalar proposal can perform only the work that
-#' its dependency structure requires.
+#' in generated C so that each scalar update can perform only the work that its
+#' dependency structure requires.
 #'
 #' @details
 #' The preferred interface declares model parameters directly in the model
 #' source with `param` for continuous parameters and `dparam` for bounded
 #' discrete parameters. Parameter and data accessors use one-based indexing,
 #' matching R. For example, `param beta(p);` creates `beta(1)`, ..., `beta(p)`,
-#' and a matrix supplied as `X` in `data` can be read as `X(i, j)`.
+#' and a matrix supplied as `X` in `data` can be read as `X(i, j)`. Continuous
+#' declarations use `sampler=rwmh` by default and can instead request scalar
+#' slice sampling with `sampler=slice`, e.g. `param u(n, p) sampler=slice;`.
+#' The sampler modifier is declaration-local, so RWMH and slice parameters can
+#' be mixed in the same model.
 #'
 #' Probability statements have the form
 #' `value ~ distribution(arguments);` and add the corresponding log density or
@@ -415,20 +419,22 @@ hobbs_check_sampler <- function(quiet = FALSE) {
 #' creates one scalar update for each coordinate of `beta`. The block need not
 #' evaluate the complete log posterior. It should evaluate exactly the prior,
 #' likelihood, and other posterior terms whose values can change when that
-#' coordinate changes. Terms that do not depend on the proposed coordinate may
-#' be omitted because they cancel from the Metropolis-Hastings ratio.
+#' coordinate changes. Terms that do not depend on the active coordinate may be
+#' omitted because they are constant in that coordinate's conditional target.
 #'
 #' This is an exact computation, not an approximation, provided that every
-#' posterior contribution affected by the proposal is included. A `block` is
+#' posterior contribution affected by the update is included. A `block` is
 #' therefore both a sampling declaration and an explicit dependency contract.
 #' This lets grouped, sparse, latent-variable, and variable-selection models
-#' restrict work to the observations or terms actually affected by a proposal.
+#' restrict work to the observations or terms actually affected by an update.
 #'
-#' Continuous coordinates use sequential scalar Gaussian random-walk
-#' Metropolis updates. Bounded discrete coordinates declared with, for example,
-#' `dparam z(n, 0, 1);` are updated by evaluating their local block target over
-#' every value in the declared support and drawing from the resulting
-#' finite-state conditional distribution.
+#' Continuous coordinates use sequential scalar Gaussian random-walk Metropolis
+#' updates by default. Adding `sampler=slice` to a continuous parameter
+#' declaration selects a stepping-out/shrinkage slice update for every scalar
+#' coordinate in that declaration. Bounded discrete coordinates declared with,
+#' for example, `dparam z(n, 0, 1);` are updated by evaluating their local block
+#' target over every value in the declared support and drawing from the
+#' resulting finite-state conditional distribution.
 #'
 #' @section Persistent deterministic caches:
 #' A block can maintain exact deterministic state with attached `cache` and
@@ -451,12 +457,15 @@ hobbs_check_sampler <- function(quiet = FALSE) {
 #' lookup-table approximation controlled by `log_cache`.
 #'
 #' @section Sampling and adaptation:
-#' Each continuous coordinate is attempted once per sweep. During burn-in,
-#' hobbs adapts a coordinate-specific Gaussian random-walk proposal scale using
-#' Robbins-Monro stochastic approximation with target acceptance probability
-#' `0.44`. Adaptation ends with burn-in and the resulting scales are fixed for
-#' retained sampling. Discrete finite-state Gibbs updates do not require
-#' proposal-scale adaptation.
+#' Each continuous coordinate is updated once per sweep using the sampler named
+#' in its parameter declaration. `sampler=rwmh` uses the existing adaptive
+#' Gaussian random-walk Metropolis kernel with a coordinate-specific
+#' Robbins-Monro scale and target acceptance probability `0.44`.
+#' `sampler=slice` uses univariate slice sampling with randomized stepping out
+#' and interval shrinkage. Slice widths start at `1` and adapt from observed
+#' scalar jump distances during burn-in only; the widths are frozen for retained
+#' sampling. Bounded discrete parameters continue to use exact finite-state
+#' Gibbs updates. All three update types can coexist in one model.
 #'
 #' @section Output and high-dimensional storage:
 #' By default, retained draws are written to a binary chain and can be read with
@@ -500,8 +509,11 @@ hobbs_check_sampler <- function(quiet = FALSE) {
 #'   `.c` model file. Model source can contain `param` and `dparam`
 #'   declarations, `func` chunks, `block` declarations, probability statements,
 #'   and attached `cache`/`update` declarations. A continuous declaration may
-#'   end in `save=mean` to retain only its post-burn-in mean. One-based ascending
-#'   loops written as `for (i in 1:N)` or `for (i = 1:N)` are translated to C
+#'   include `sampler=rwmh` (the default) or `sampler=slice`, independently of
+#'   the optional `save=mean` output modifier. For example,
+#'   `param u(n, p) save=mean sampler=slice;` uses slice sampling while retaining
+#'   only the posterior mean. One-based ascending loops written as
+#'   `for (i in 1:N)` or `for (i = 1:N)` are translated to C
 #'   loops before compilation.
 #' @param data Optional named list containing model data. Numeric, integer, and
 #'   logical scalars, vectors, and matrices are supported. Scalars are exposed by
@@ -510,8 +522,8 @@ hobbs_check_sampler <- function(quiet = FALSE) {
 #'   dimensions are exposed as `<name>_len`, `<name>_nrow`, and `<name>_ncol`.
 #' @param samples Number of retained post-burn-in samples to save. Default
 #'   `1000`.
-#' @param burnin Number of discarded burn-in iterations. Proposal adaptation is
-#'   performed throughout burn-in. Default `500`.
+#' @param burnin Number of discarded burn-in iterations. RWMH proposal scales
+#'   and slice widths are adapted throughout burn-in, then frozen. Default `500`.
 #' @param out Output path for the retained binary chain. Defaults to
 #'   `chain.bin` in `workdir`.
 #' @param workdir Working directory used for generated model source, data
@@ -621,7 +633,7 @@ hobbs <- function(model,
     # The public interface intentionally exposes only the settings above.
     # Current sampler behavior is fixed to block updates, binary chain output,
     # one retained draw per sweep, adaptation through burn-in, and the package
-    # defaults for proposal scale and target acceptance.
+    # defaults for RWMH proposal scale/target acceptance and slice width.
     adapt_until <- burnin
     eval <- "auto"
     format <- "bin"
@@ -675,7 +687,8 @@ hobbs <- function(model,
                 sep = ":"
             )
         } else {
-            spec <- paste(b$name, b$offset, b$len, b$type, sep = ":")
+            sampler <- b$sampler %||% "rwmh"
+            spec <- paste(b$name, b$offset, b$len, b$type, sampler, sep = ":")
         }
         c("--block", spec)
     }), use.names = FALSE)
@@ -775,6 +788,16 @@ hobbs <- function(model,
     } else {
         character()
     }
+    parameter_sampler <- if (length(param_info$spec)) {
+        modes <- vapply(
+            param_info$spec,
+            function(item) item$sampler %||% (if (identical(item$value_type, "discrete")) "gibbs" else "rwmh"),
+            character(1)
+        )
+        setNames(modes, vapply(param_info$spec, `[[`, character(1), "name"))
+    } else {
+        character()
+    }
     
     if (declaration_means && output_plan$chain_dim == 0L) {
         primary_dim <- output_plan$mean_dim
@@ -800,6 +823,7 @@ hobbs <- function(model,
         chain_output = chain_output_path,
         mean_output = mean_output_path,
         parameter_save = parameter_save,
+        parameter_sampler = parameter_sampler,
         samples = as.integer(samples),
         burnin = as.integer(burnin),
         adaptation = adaptation_path,
@@ -857,6 +881,7 @@ hobbs <- function(model,
         chain_param_names = output_plan$chain_names,
         mean_param_names = output_plan$mean_names,
         parameter_save = parameter_save,
+        parameter_sampler = parameter_sampler,
         param_spec = param_info$spec,
         samples = as.integer(samples),
         burnin = as.integer(burnin),
@@ -2143,6 +2168,7 @@ generate_scalar_kernels_c <- function(param_info, block_info, cache_decls) {
     offset <- as.integer(parameter$offset)
     len <- as.integer(parameter$len)
     value_type <- parameter$value_type %||% "continuous"
+    sampler <- parameter$sampler %||% (if (identical(value_type, "discrete")) "gibbs" else "rwmh")
     has_cache <- name %in% cache_blocks
 
     out <- c(
@@ -2161,9 +2187,43 @@ generate_scalar_kernels_c <- function(param_info, block_info, cache_decls) {
       "",
       sprintf("hobbs_EXPORT double hobbs_scalar_candidate_%s(double *theta, int index, int position, double current_value, double proposed_value) {", name),
       sprintf("  return hobbs_candidate_impl_%s(theta, index, position, current_value, proposed_value);", name),
-      "}",
-      sprintf("hobbs_EXPORT void hobbs_scalar_accept_%s(void) {", name)
+      "}"
     )
+
+    if (identical(value_type, "continuous") && identical(sampler, "slice")) {
+      out <- c(
+        out,
+        sprintf("hobbs_EXPORT double hobbs_scalar_probe_%s(double *theta, int index, int position, double current_value, double proposed_value) {", name),
+        sprintf("  const double proposed_local = hobbs_candidate_impl_%s(theta, index, position, current_value, proposed_value);", name)
+      )
+      if (has_cache) out <- c(out, sprintf("  hobbs_cache_abort_%s(theta, index, current_value);", name))
+      out <- c(
+        out,
+        "  theta[position] = current_value;",
+        "  return proposed_local;",
+        "}",
+        sprintf("hobbs_EXPORT double hobbs_scalar_slice_try_%s(double *theta, int index, int position, double current_value, double proposed_value, double log_slice, int *accepted_out) {", name),
+        sprintf("  const double proposed_local = hobbs_candidate_impl_%s(theta, index, position, current_value, proposed_value);", name),
+        "  if (isfinite(proposed_local) && proposed_local >= log_slice) {"
+      )
+      if (has_cache) out <- c(out, sprintf("    hobbs_cache_commit_%s();", name))
+      out <- c(
+        out,
+        "    *accepted_out = 1;",
+        "    return proposed_local;",
+        "  }"
+      )
+      if (has_cache) out <- c(out, sprintf("  hobbs_cache_abort_%s(theta, index, current_value);", name))
+      out <- c(
+        out,
+        "  theta[position] = current_value;",
+        "  *accepted_out = 0;",
+        "  return proposed_local;",
+        "}"
+      )
+    }
+
+    out <- c(out, sprintf("hobbs_EXPORT void hobbs_scalar_accept_%s(void) {", name))
     if (has_cache) out <- c(out, sprintf("  hobbs_cache_commit_%s();", name))
     out <- c(
       out,
@@ -2174,7 +2234,7 @@ generate_scalar_kernels_c <- function(param_info, block_info, cache_decls) {
     if (has_cache) out <- c(out, sprintf("  hobbs_cache_abort_%s(theta, index, current_value);", name))
     out <- c(out, "  theta[position] = current_value;", "}", "")
 
-    if (!identical(value_type, "continuous")) next
+    if (!identical(value_type, "continuous") || !identical(sampler, "rwmh")) next
 
     # One scalar transition helper is shared by the compatibility sweep and
     # the fused adaptation sweep. Every coordinate still receives an ordinary
@@ -2522,11 +2582,11 @@ resolve_block_runtime <- function(update, param_info, block_info) {
   grouped <- param_names[block_type[param_names] != "indexed"]
   if (length(grouped)) {
     stop(
-      "hobbs block mode is scalar Metropolis-within-Gibbs only. Replace bare grouped declaration(s) ",
+      "hobbs block mode uses scalar coordinate updates only. Replace bare grouped declaration(s) ",
       paste(sprintf("`block %s`", grouped), collapse = ", "),
       " with indexed scalar declaration(s), e.g. ",
       paste(sprintf("`block %s(j)`", grouped), collapse = ", "),
-      ". Every coordinate is then visited once per sweep; no multivariate block proposal is made.",
+      ". Every coordinate is then visited once per sweep; no multivariate block update is made.",
       call. = FALSE
     )
   }
@@ -2571,6 +2631,7 @@ resolve_block_runtime <- function(update, param_info, block_info) {
     len = as.integer(x$len),
     type = "indexed",
     value_type = x$value_type %||% "continuous",
+    sampler = x$sampler %||% (if (identical(x$value_type, "discrete")) "gibbs" else "rwmh"),
     lower = as.integer(x$lower %||% 0L),
     upper = as.integer(x$upper %||% 0L)
   ))
@@ -2582,6 +2643,66 @@ resolve_block_runtime <- function(update, param_info, block_info) {
 }
 
 
+parse_param_declaration_options <- function(suffix, allow_sampler = TRUE, line = "") {
+  text <- sub("//.*$", "", suffix, perl = TRUE)
+  text <- trimws(text)
+  text <- sub(";[[:space:]]*$", "", text, perl = TRUE)
+  text <- trimws(text)
+
+  save_mode <- "chain"
+  sampler_mode <- if (isTRUE(allow_sampler)) "rwmh" else "gibbs"
+  if (!nzchar(text)) {
+    return(list(save = save_mode, sampler = sampler_mode))
+  }
+
+  text <- gsub("[[:space:]]*=[[:space:]]*", "=", text, perl = TRUE)
+  tokens <- strsplit(text, "[[:space:]]+", perl = TRUE)[[1L]]
+  seen <- character()
+
+  for (token in tokens) {
+    if (token %in% c("save=mean", "save=chain")) {
+      if ("save" %in% seen) {
+        stop("Duplicate `save=` option in parameter declaration: ", trimws(line), call. = FALSE)
+      }
+      save_mode <- sub("^save=", "", token)
+      seen <- c(seen, "save")
+      next
+    }
+
+    if (grepl("^sampler=", token, perl = TRUE)) {
+      if (!isTRUE(allow_sampler)) {
+        stop(
+          "`sampler=` is only valid for continuous `param` declarations; bounded `dparam` declarations use exact finite-state Gibbs updates: ",
+          trimws(line), call. = FALSE
+        )
+      }
+      if ("sampler" %in% seen) {
+        stop("Duplicate `sampler=` option in parameter declaration: ", trimws(line), call. = FALSE)
+      }
+      sampler_mode <- sub("^sampler=", "", token)
+      if (!(sampler_mode %in% c("rwmh", "slice"))) {
+        stop(
+          "Unknown parameter sampler `", sampler_mode,
+          "` in: ", trimws(line),
+          ". Supported continuous samplers are `rwmh` and `slice`.",
+          call. = FALSE
+        )
+      }
+      seen <- c(seen, "sampler")
+      next
+    }
+
+    stop(
+      "Invalid parameter declaration option `", token, "` in: ", trimws(line),
+      ". Supported options are `save=mean` and `sampler=rwmh|slice`.",
+      call. = FALSE
+    )
+  }
+
+  list(save = save_mode, sampler = sampler_mode)
+}
+
+
 parse_param_declarations <- function(model_c, data = NULL) {
   src <- readLines(model_c, warn = FALSE)
   specs <- list()
@@ -2590,29 +2711,32 @@ parse_param_declarations <- function(model_c, data = NULL) {
 
   # Continuous parameters:
   #   param beta(2)
-  #   param theta(n_row, n_col) save=mean
+  #   param theta(n_row, n_col) save=mean sampler=rwmh
+  #   param u(n_row, n_col) sampler=slice
   # Discrete integer parameters:
   #   dparam z(n, 0, 1)
   #   dparam z(n, 0, 1) save=mean
-  # where the final two entries are inclusive integer bounds.  Parameters use
-  # full-chain output unless the declaration has the exact `save=mean` suffix.
-  save_suffix <- "(?:[[:space:]]+save[[:space:]]*=[[:space:]]*(mean))?"
+  # where the final two entries are inclusive integer bounds. Continuous
+  # parameters default to adaptive scalar random-walk Metropolis; sampler=slice
+  # selects scalar stepping-out/shrinkage slice sampling for that declaration.
+  # Bounded discrete parameters always use exact finite-state Gibbs updates.
   pat_param <- paste0(
     "^[[:space:]]*param[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*\\(",
     "[[:space:]]*([A-Za-z_][A-Za-z0-9_]*|[0-9]+)[[:space:]]*",
     "(?:,[[:space:]]*([A-Za-z_][A-Za-z0-9_]*|[0-9]+)[[:space:]]*)?\\)",
-    save_suffix, "[[:space:]]*;?[[:space:]]*(?://.*)?$"
+    "(.*)$"
   )
   pat_dparam <- paste0(
     "^[[:space:]]*dparam[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*\\(",
     "[[:space:]]*([A-Za-z_][A-Za-z0-9_]*|[0-9]+)[[:space:]]*,",
     "[[:space:]]*([-]?[A-Za-z_][A-Za-z0-9_]*|[-]?[0-9]+)[[:space:]]*,",
     "[[:space:]]*([-]?[A-Za-z_][A-Za-z0-9_]*|[-]?[0-9]+)[[:space:]]*\\)",
-    save_suffix, "[[:space:]]*;?[[:space:]]*(?://.*)?$"
+    "(.*)$"
   )
 
   add_spec <- function(nm, nr, nc, value_type = "continuous", lower = NA_integer_,
-                       upper = NA_integer_, save_mode = "chain", line = "") {
+                       upper = NA_integer_, save_mode = "chain", sampler_mode = "rwmh",
+                       line = "") {
     if (is.na(nr) || is.na(nc) || nr <= 0L || nc <= 0L) {
       stop("Invalid parameter declaration: ", trimws(line), call. = FALSE)
     }
@@ -2637,7 +2761,7 @@ parse_param_declarations <- function(model_c, data = NULL) {
       len = len, offset = start, value_type = value_type,
       lower = if (is.na(lower)) NA_integer_ else as.integer(lower),
       upper = if (is.na(upper)) NA_integer_ else as.integer(upper),
-      save = save_mode, names = item_names
+      save = save_mode, sampler = sampler_mode, names = item_names
     )
     names_out <<- c(names_out, item_names)
     offset <<- offset + len
@@ -2651,10 +2775,10 @@ parse_param_declarations <- function(model_c, data = NULL) {
       nr <- resolve_param_extent(hd[[3L]], data = data, context = trimws(line))
       lo <- resolve_integer_extent(hd[[4L]], data = data, context = trimws(line))
       hi <- resolve_integer_extent(hd[[5L]], data = data, context = trimws(line))
-      save_mode <- if (nzchar(hd[[6L]])) hd[[6L]] else "chain"
+      options <- parse_param_declaration_options(hd[[6L]], allow_sampler = FALSE, line = line)
       if (hi < lo) stop("dparam upper bound must be >= lower bound in: ", trimws(line), call. = FALSE)
       add_spec(nm, nr, 1L, value_type = "discrete", lower = lo, upper = hi,
-               save_mode = save_mode, line = line)
+               save_mode = options$save, sampler_mode = "gibbs", line = line)
       next
     }
 
@@ -2664,18 +2788,19 @@ parse_param_declarations <- function(model_c, data = NULL) {
       nm <- hit[[2L]]
       nr_expr <- hit[[3L]]
       nc_expr <- hit[[4L]]
-      save_mode <- if (nzchar(hit[[5L]])) hit[[5L]] else "chain"
+      options <- parse_param_declaration_options(hit[[5L]], allow_sampler = TRUE, line = line)
       nr <- resolve_param_extent(nr_expr, data = data, context = trimws(line))
       nc <- if (nzchar(nc_expr)) resolve_param_extent(nc_expr, data = data, context = trimws(line)) else 1L
-      add_spec(nm, nr, nc, value_type = "continuous", save_mode = save_mode, line = line)
+      add_spec(nm, nr, nc, value_type = "continuous", save_mode = options$save,
+               sampler_mode = options$sampler, line = line)
       next
     }
 
     if (grepl("^[[:space:]]*(?:param|dparam)\\b", line, perl = TRUE)) {
       stop(
         "Invalid parameter declaration: ", trimws(line),
-        ". Supported output syntax is an optional `save=mean` suffix, e.g. ",
-        "`param u(m, 2) save=mean;`.",
+        ". Continuous declarations support optional `save=mean` and `sampler=rwmh|slice` modifiers, e.g. ",
+        "`param u(m, 2) save=mean sampler=slice;`.",
         call. = FALSE
       )
     }
@@ -2745,7 +2870,7 @@ strip_param_declarations <- function(src) {
   pat <- paste0(
     "^[[:space:]]*(?:param|dparam)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*",
     "[[:space:]]*\\([^)]+\\)",
-    "(?:[[:space:]]+save[[:space:]]*=[[:space:]]*mean)?",
+    "(?:[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[[:space:]]*[A-Za-z_][A-Za-z0-9_]*)*",
     "[[:space:]]*;?[[:space:]]*(?://.*)?$"
   )
   src[!grepl(pat, src, perl = TRUE)]
