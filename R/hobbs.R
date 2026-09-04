@@ -3489,6 +3489,21 @@ void posterior_logp_batch(const double* theta, int dim, int n_batch, double* out
 '
 }
 
+#' Print a hobbs run
+#'
+#' @description
+#' Prints a concise summary of a completed \code{hobbs} sampling run, including
+#' output locations, model dimension, retained samples, warmup settings, and
+#' adaptation diagnostics when available.
+#'
+#' @param x An object of class \code{hobbs_run}, typically returned by
+#'   [hobbs()].
+#' @param ... Additional arguments passed to the print method. Currently unused.
+#'
+#' @return Invisibly returns \code{x}.
+#'
+#' @method print hobbs_run
+#' @export
 print.hobbs_run <- function(x, ...) {
   cat("hobbs run\n")
   has_chain_output <- !is.null(x$chain_output) && length(x$chain_output) == 1L &&

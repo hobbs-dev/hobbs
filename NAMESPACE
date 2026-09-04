@@ -8,4 +8,4 @@ export(hobbs_install_sampler)
 export(hobbs_check_sampler)
 export(read_hobbs_mean)
 importFrom(stats, setNames)
-
+S3method(print,hobbs_run)
