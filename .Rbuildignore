@@ -5,3 +5,4 @@
 ^inst/hobbs/target$
 ^.*\.DS_Store$
 ^inst/hobbs/\.cargo($|/)
+^inst/hobbs/\Cargo($|/)
