@@ -81,6 +81,16 @@ type ContinuousProductionSweepFn = unsafe extern "C" fn(
     *mut c_int,
 ) -> f64;
 type ScalarCandidateFn = unsafe extern "C" fn(*mut f64, c_int, c_int, f64, f64) -> f64;
+type ScalarProbeFn = unsafe extern "C" fn(*mut f64, c_int, c_int, f64, f64) -> f64;
+type ScalarSliceTryFn = unsafe extern "C" fn(
+    *mut f64,
+    c_int,
+    c_int,
+    f64,
+    f64,
+    f64,
+    *mut c_int,
+) -> f64;
 type ScalarAcceptFn = unsafe extern "C" fn();
 type ScalarRejectFn = unsafe extern "C" fn(*mut f64, c_int, c_int, f64, f64);
 
@@ -165,12 +175,30 @@ impl ValueKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SamplerKind {
+    Rwmh,
+    Slice,
+    Gibbs,
+}
+
+impl SamplerKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            SamplerKind::Rwmh => "rwmh",
+            SamplerKind::Slice => "slice",
+            SamplerKind::Gibbs => "gibbs",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct BlockSpec {
     name: String,
     offset: usize,
     len: usize,
     value_kind: ValueKind,
+    sampler: SamplerKind,
     lower: i64,
     upper: i64,
 }
@@ -186,6 +214,7 @@ struct RuntimeBlock {
     offset: usize,
     len: usize,
     value_kind: ValueKind,
+    sampler: SamplerKind,
     lower: i64,
     upper: i64,
     discrete_state_count: usize,
@@ -194,6 +223,8 @@ struct RuntimeBlock {
     continuous_production_sweep: Option<ContinuousProductionSweepFn>,
     continuous_sweep: Option<ContinuousSweepFn>,
     scalar_candidate: Option<ScalarCandidateFn>,
+    scalar_probe: Option<ScalarProbeFn>,
+    scalar_slice_try: Option<ScalarSliceTryFn>,
     scalar_accept: Option<ScalarAcceptFn>,
     scalar_reject: Option<ScalarRejectFn>,
     cache_update: Option<CacheUpdateFn>,
@@ -416,6 +447,12 @@ impl PosteriorLib {
             let candidate_sym = format!("hobbs_scalar_candidate_{}", b.name);
             let scalar_candidate = unsafe { optional_symbol(self.handle, &candidate_sym) }
                 .map(|p| unsafe { std::mem::transmute::<*mut c_void, ScalarCandidateFn>(p) });
+            let probe_sym = format!("hobbs_scalar_probe_{}", b.name);
+            let scalar_probe = unsafe { optional_symbol(self.handle, &probe_sym) }
+                .map(|p| unsafe { std::mem::transmute::<*mut c_void, ScalarProbeFn>(p) });
+            let slice_try_sym = format!("hobbs_scalar_slice_try_{}", b.name);
+            let scalar_slice_try = unsafe { optional_symbol(self.handle, &slice_try_sym) }
+                .map(|p| unsafe { std::mem::transmute::<*mut c_void, ScalarSliceTryFn>(p) });
             let accept_sym = format!("hobbs_scalar_accept_{}", b.name);
             let scalar_accept = unsafe { optional_symbol(self.handle, &accept_sym) }
                 .map(|p| unsafe { std::mem::transmute::<*mut c_void, ScalarAcceptFn>(p) });
@@ -442,6 +479,7 @@ impl PosteriorLib {
                 offset: b.offset,
                 len: b.len,
                 value_kind: b.value_kind,
+                sampler: b.sampler,
                 lower: b.lower,
                 upper: b.upper,
                 discrete_state_count,
@@ -450,6 +488,8 @@ impl PosteriorLib {
                 continuous_production_sweep,
                 continuous_sweep,
                 scalar_candidate,
+                scalar_probe,
+                scalar_slice_try,
                 scalar_accept,
                 scalar_reject,
                 cache_update,
@@ -730,8 +770,8 @@ fn parse_update_mode(s: &str) -> UpdateMode {
 
 fn parse_block_spec(s: &str) -> BlockSpec {
     let parts: Vec<&str> = s.split(':').collect();
-    if parts.len() != 3 && parts.len() != 4 && parts.len() != 7 {
-        eprintln!("--block must have form name:offset:len[:indexed] or name:offset:len:indexed:continuous|discrete:lower:upper");
+    if parts.len() != 3 && parts.len() != 4 && parts.len() != 5 && parts.len() != 7 {
+        eprintln!("--block must have form name:offset:len[:indexed[:rwmh|slice]] or name:offset:len:indexed:discrete:lower:upper");
         process::exit(2);
     }
     let name = parts[0].to_string();
@@ -741,7 +781,7 @@ fn parse_block_spec(s: &str) -> BlockSpec {
         match parts[3] {
             "indexed" | "scalar" | "element" => {}
             "group" | "joint" => {
-                eprintln!("joint block proposals are not supported; use block name(j) for scalar Metropolis-within-Gibbs updates");
+                eprintln!("joint block proposals are not supported; use block name(j) for scalar parameter-local updates");
                 process::exit(2);
             }
             _ => {
@@ -750,7 +790,8 @@ fn parse_block_spec(s: &str) -> BlockSpec {
             }
         }
     }
-    let (value_kind, lower, upper) = if parts.len() == 7 {
+
+    let (value_kind, sampler, lower, upper) = if parts.len() == 7 {
         let vk = match parts[4] {
             "continuous" | "real" => ValueKind::Continuous,
             "discrete" | "integer" | "int" => ValueKind::Discrete,
@@ -765,15 +806,32 @@ fn parse_block_spec(s: &str) -> BlockSpec {
             eprintln!("--block discrete upper bound must be >= lower bound");
             process::exit(2);
         }
-        (vk, lo, hi)
+        let sampler = if vk == ValueKind::Discrete {
+            SamplerKind::Gibbs
+        } else {
+            SamplerKind::Rwmh
+        };
+        (vk, sampler, lo, hi)
+    } else if parts.len() == 5 {
+        let sampler = match parts[4] {
+            "rwmh" | "mh" | "metropolis" => SamplerKind::Rwmh,
+            "slice" => SamplerKind::Slice,
+            _ => {
+                eprintln!("--block continuous sampler must be rwmh or slice");
+                process::exit(2);
+            }
+        };
+        (ValueKind::Continuous, sampler, 0, 0)
     } else {
-        (ValueKind::Continuous, 0, 0)
+        (ValueKind::Continuous, SamplerKind::Rwmh, 0, 0)
     };
+
     BlockSpec {
         name,
         offset,
         len,
         value_kind,
+        sampler,
         lower,
         upper,
     }
@@ -912,7 +970,7 @@ fn parse_f64(s: &str, name: &str) -> f64 {
 
 fn print_help_and_exit() -> ! {
     println!(
-        r#"hobbs: single-chain adaptive scalar Metropolis-within-Gibbs
+        r#"hobbs: single-chain scalar parameter-local MCMC
 
 Required:
   --lib PATH              Shared library exporting posterior_logp and/or posterior_logp_batch
@@ -923,18 +981,19 @@ Defaults:
   --samples 1000          Saved samples after burn-in
   --burnin 500            Warmup/burn-in sweeps (`--warmups` is an alias)
   --thin 1
-  --step 0.25             Initial proposal step size
+  --step 0.25             Initial RWMH proposal step size
   --adapt-every 25        Retained for compatibility; scalar adaptation runs every sweep
   --adapt-until burnin    Last iteration allowed to adapt; default equals --burnin
-  --target-accept 0.44    Per-coordinate Robbins-Monro acceptance target
+  --target-accept 0.44    Per-coordinate RWMH Robbins-Monro acceptance target
   --seed 1311768467463790320
   --out chain.bin         Binary output is the default
   --format bin            bin/binary or csv for chain output
   --save chain            chain or mean. mean writes only post-burn-in means
   --mean-range off:len    Parameter range averaged instead of written per draw; repeatable
   --mean-out PATH         One-row standard binary for declaration-level means
-  --update global         full-target scalar MWG or indexed block/local MWG
-  --block name:off:len[:indexed[:type:lo:hi]] Scalar block metadata; type may be discrete
+  --update global         full-target scalar RWMH or indexed parameter-local updates
+  --block name:off:len:indexed:rwmh|slice      Continuous block sampler metadata
+  --block name:off:len:indexed:discrete:lo:hi Exact finite-state Gibbs metadata
   --adapt-diagnostics-out PATH  Per-coordinate adaptation diagnostics CSV
   --eval auto             auto, scalar, or batch
 
@@ -1728,6 +1787,333 @@ fn total_iterations(cfg: &Config) -> usize {
         })
 }
 
+const SLICE_STEPOUT_LIMIT: usize = 100;
+const SLICE_SHRINK_LIMIT: usize = 10_000;
+const SLICE_INITIAL_WIDTH: f64 = 1.0;
+const SLICE_MIN_WIDTH: f64 = 1.0e-12;
+const SLICE_MAX_WIDTH: f64 = 1.0e12;
+
+#[derive(Debug, Clone, Copy)]
+struct SliceUpdate {
+    new_local: f64,
+    new_value: f64,
+    evaluations: u64,
+    step_outs: u64,
+    shrink_rejections: u64,
+}
+
+#[inline(always)]
+fn has_generated_scalar_transaction(block: &RuntimeBlock) -> bool {
+    block.scalar_candidate.is_some()
+        && block.scalar_accept.is_some()
+        && block.scalar_reject.is_some()
+}
+
+#[inline(always)]
+fn begin_scalar_candidate(
+    posterior: &PosteriorLib,
+    block: &RuntimeBlock,
+    theta: &mut [f64],
+    index: c_int,
+    position: usize,
+    current_value: f64,
+    proposed_value: f64,
+) -> f64 {
+    if has_generated_scalar_transaction(block) {
+        return unsafe {
+            block.scalar_candidate.unwrap_unchecked()(
+                theta.as_mut_ptr(),
+                index,
+                position as c_int,
+                current_value,
+                proposed_value,
+            )
+        };
+    }
+
+    theta[position] = proposed_value;
+    if let Some(update_fn) = block.cache_update {
+        if block.cache_undo.is_none() && !block.cache_update_reversible {
+            posterior.cache_snapshot();
+        }
+        unsafe {
+            update_fn(theta.as_ptr(), index, current_value);
+        }
+    }
+    unsafe { (block.f)(theta.as_ptr(), index) }
+}
+
+#[inline(always)]
+fn probe_scalar_candidate(
+    posterior: &PosteriorLib,
+    block: &RuntimeBlock,
+    theta: &mut [f64],
+    index: c_int,
+    position: usize,
+    current_value: f64,
+    proposed_value: f64,
+) -> f64 {
+    if let Some(probe) = block.scalar_probe {
+        return unsafe {
+            probe(
+                theta.as_mut_ptr(),
+                index,
+                position as c_int,
+                current_value,
+                proposed_value,
+            )
+        };
+    }
+
+    let candidate = begin_scalar_candidate(
+        posterior,
+        block,
+        theta,
+        index,
+        position,
+        current_value,
+        proposed_value,
+    );
+    reject_scalar_candidate(
+        posterior,
+        block,
+        theta,
+        index,
+        position,
+        current_value,
+        proposed_value,
+    );
+    candidate
+}
+
+#[inline(always)]
+fn reject_scalar_candidate(
+    posterior: &PosteriorLib,
+    block: &RuntimeBlock,
+    theta: &mut [f64],
+    index: c_int,
+    position: usize,
+    current_value: f64,
+    proposed_value: f64,
+) {
+    if has_generated_scalar_transaction(block) {
+        unsafe {
+            block.scalar_reject.unwrap_unchecked()(
+                theta.as_mut_ptr(),
+                index,
+                position as c_int,
+                current_value,
+                proposed_value,
+            );
+        }
+        return;
+    }
+
+    if block.cache_update.is_some() {
+        if let Some(undo_fn) = block.cache_undo {
+            unsafe {
+                undo_fn(theta.as_ptr(), index, current_value);
+            }
+            theta[position] = current_value;
+        } else if block.cache_update_reversible {
+            theta[position] = current_value;
+            unsafe {
+                block.cache_update.unwrap_unchecked()(theta.as_ptr(), index, proposed_value);
+            }
+        } else {
+            posterior.cache_restore();
+            theta[position] = current_value;
+        }
+    } else {
+        theta[position] = current_value;
+    }
+}
+
+#[inline(always)]
+fn accept_scalar_candidate(block: &RuntimeBlock) {
+    if has_generated_scalar_transaction(block) {
+        unsafe {
+            block.scalar_accept.unwrap_unchecked()();
+        }
+    }
+}
+
+#[inline(always)]
+fn try_slice_candidate(
+    posterior: &PosteriorLib,
+    block: &RuntimeBlock,
+    theta: &mut [f64],
+    index: c_int,
+    position: usize,
+    current_value: f64,
+    proposed_value: f64,
+    log_slice: f64,
+) -> (f64, bool) {
+    if let Some(slice_try) = block.scalar_slice_try {
+        let mut accepted: c_int = 0;
+        let proposed_local = unsafe {
+            slice_try(
+                theta.as_mut_ptr(),
+                index,
+                position as c_int,
+                current_value,
+                proposed_value,
+                log_slice,
+                &mut accepted,
+            )
+        };
+        return (proposed_local, accepted != 0);
+    }
+
+    let proposed_local = begin_scalar_candidate(
+        posterior,
+        block,
+        theta,
+        index,
+        position,
+        current_value,
+        proposed_value,
+    );
+    let accepted = proposed_local.is_finite() && proposed_local >= log_slice;
+    if accepted {
+        accept_scalar_candidate(block);
+    } else {
+        reject_scalar_candidate(
+            posterior,
+            block,
+            theta,
+            index,
+            position,
+            current_value,
+            proposed_value,
+        );
+    }
+    (proposed_local, accepted)
+}
+
+#[inline(always)]
+fn adapt_slice_width(width: &mut f64, tuning_factor: &mut f64, jump: f64, gain: f64) {
+    if jump.is_finite() && jump > 0.0 && gain > 0.0 {
+        // A width around twice the observed scalar jump gives the stepping-out
+        // procedure enough room to find the slice quickly without creating an
+        // unnecessarily wide shrinkage interval. The gain is computed once
+        // per warmup sweep, not once per coordinate.
+        let target_width = (2.0 * jump).clamp(SLICE_MIN_WIDTH, SLICE_MAX_WIDTH);
+        *width = (*width + gain * (target_width - *width))
+            .clamp(SLICE_MIN_WIDTH, SLICE_MAX_WIDTH);
+    }
+    *tuning_factor = (*width / SLICE_INITIAL_WIDTH).clamp(SLICE_MIN_WIDTH, SLICE_MAX_WIDTH);
+}
+
+#[inline]
+fn slice_update_coordinate(
+    posterior: &PosteriorLib,
+    block: &RuntimeBlock,
+    theta: &mut [f64],
+    index: c_int,
+    position: usize,
+    current_local: f64,
+    width: f64,
+    rng: &mut Xoshiro256StarStar,
+) -> SliceUpdate {
+    let current_value = theta[position];
+    let width = width
+        .max(8.0 * f64::EPSILON * (1.0 + current_value.abs()))
+        .clamp(SLICE_MIN_WIDTH, SLICE_MAX_WIDTH);
+    let log_slice = current_local + rng.uniform_open01().ln();
+
+    // Randomly position the initial interval around the current point, then
+    // use Neal's m-limited stepping-out construction. Randomly splitting the
+    // finite step-out budget between left and right preserves reversibility.
+    let mut left = current_value - width * rng.uniform_open01();
+    let mut right = left + width;
+    let mut left_steps = (rng.uniform_open01() * SLICE_STEPOUT_LIMIT as f64) as usize;
+    if left_steps >= SLICE_STEPOUT_LIMIT {
+        left_steps = SLICE_STEPOUT_LIMIT - 1;
+    }
+    let mut right_steps = SLICE_STEPOUT_LIMIT - 1 - left_steps;
+
+    let mut evaluations = 0u64;
+    let mut step_outs = 0u64;
+    let mut shrink_rejections = 0u64;
+
+    while left_steps > 0 {
+        let candidate_local = probe_scalar_candidate(
+            posterior,
+            block,
+            theta,
+            index,
+            position,
+            current_value,
+            left,
+        );
+        evaluations += 1;
+        if !candidate_local.is_finite() || candidate_local <= log_slice {
+            break;
+        }
+        left -= width;
+        left_steps -= 1;
+        step_outs += 1;
+    }
+
+    while right_steps > 0 {
+        let candidate_local = probe_scalar_candidate(
+            posterior,
+            block,
+            theta,
+            index,
+            position,
+            current_value,
+            right,
+        );
+        evaluations += 1;
+        if !candidate_local.is_finite() || candidate_local <= log_slice {
+            break;
+        }
+        right += width;
+        right_steps -= 1;
+        step_outs += 1;
+    }
+
+    for _ in 0..SLICE_SHRINK_LIMIT {
+        let proposed_value = left + (right - left) * rng.uniform_open01();
+        let (proposed_local, accepted) = try_slice_candidate(
+            posterior,
+            block,
+            theta,
+            index,
+            position,
+            current_value,
+            proposed_value,
+            log_slice,
+        );
+        evaluations += 1;
+
+        if accepted {
+            return SliceUpdate {
+                new_local: proposed_local,
+                new_value: proposed_value,
+                evaluations,
+                step_outs,
+                shrink_rejections,
+            };
+        }
+
+        shrink_rejections += 1;
+        if proposed_value < current_value {
+            left = proposed_value;
+        } else {
+            right = proposed_value;
+        }
+    }
+
+    eprintln!(
+        "slice sampler exceeded {} shrinkage evaluations for block {}({})",
+        SLICE_SHRINK_LIMIT, block.name, index
+    );
+    process::exit(1);
+}
+
 fn run_block_sampler(
     cfg: &Config,
     posterior: &mut PosteriorLib,
@@ -1771,8 +2157,8 @@ fn run_block_sampler(
 
     let mut value_kinds = vec![ValueKind::Continuous; dim];
     for block in &blocks {
-        for value_kind in &mut value_kinds[block.offset..(block.offset + block.len)] {
-            *value_kind = block.value_kind;
+        for position in block.offset..(block.offset + block.len) {
+            value_kinds[position] = block.value_kind;
         }
     }
     // Initialize finite-state parameters at their declared lower bounds before
@@ -1813,13 +2199,27 @@ fn run_block_sampler(
         .filter(|block| block.value_kind == ValueKind::Continuous)
         .flat_map(|block| block.offset..(block.offset + block.len))
         .collect();
+    let rwmh_positions: Vec<usize> = blocks
+        .iter()
+        .filter(|block| block.value_kind == ValueKind::Continuous && block.sampler == SamplerKind::Rwmh)
+        .flat_map(|block| block.offset..(block.offset + block.len))
+        .collect();
+    let slice_positions: Vec<usize> = blocks
+        .iter()
+        .filter(|block| block.value_kind == ValueKind::Continuous && block.sampler == SamplerKind::Slice)
+        .flat_map(|block| block.offset..(block.offset + block.len))
+        .collect();
     for &position in &continuous_positions {
         coordinate_adapt_proposals[position] = adapt_until as u64;
+    }
+    for &position in &slice_positions {
+        proposal_scales[position] = SLICE_INITIAL_WIDTH;
+        tuning_factors[position] = 1.0;
     }
 
     let max_continuous_len = blocks
         .iter()
-        .filter(|block| block.value_kind == ValueKind::Continuous)
+        .filter(|block| block.value_kind == ValueKind::Continuous && block.sampler == SamplerKind::Rwmh)
         .map(|block| block.len)
         .max()
         .unwrap_or(0);
@@ -1849,6 +2249,7 @@ fn run_block_sampler(
         .iter()
         .filter(|block| {
             block.value_kind == ValueKind::Continuous
+                && block.sampler == SamplerKind::Rwmh
                 && (block.continuous_adaptive_sweep.is_some()
                     || block.continuous_production_sweep.is_some()
                     || block.continuous_sweep.is_some())
@@ -1858,6 +2259,7 @@ fn run_block_sampler(
         .iter()
         .filter(|block| {
             block.value_kind == ValueKind::Continuous
+                && block.sampler == SamplerKind::Rwmh
                 && block.continuous_production_sweep.is_some()
         })
         .count();
@@ -1865,17 +2267,22 @@ fn run_block_sampler(
         .iter()
         .filter(|block| {
             block.value_kind == ValueKind::Continuous
+                && block.sampler == SamplerKind::Rwmh
                 && block.len >= FUSED_ADAPTIVE_SWEEP_MIN_LEN
                 && block.continuous_adaptive_sweep.is_some()
         })
         .count();
-    let continuous_block_count = blocks
+    let rwmh_block_count = blocks
         .iter()
-        .filter(|block| block.value_kind == ValueKind::Continuous)
+        .filter(|block| block.value_kind == ValueKind::Continuous && block.sampler == SamplerKind::Rwmh)
+        .count();
+    let slice_block_count = blocks
+        .iter()
+        .filter(|block| block.value_kind == ValueKind::Continuous && block.sampler == SamplerKind::Slice)
         .count();
 
     if !cfg.quiet {
-        eprintln!("  update mode:          adaptive scalar Metropolis-within-Gibbs");
+        eprintln!("  update mode:          scalar parameter-local samplers");
         eprintln!(
             "  block functions:      {}",
             blocks
@@ -1883,31 +2290,39 @@ fn run_block_sampler(
                 .map(|block| {
                     if block.value_kind == ValueKind::Discrete {
                         format!(
-                            "{}:scalar:{}[{},{}]",
+                            "{}:scalar:{}:{}[{},{}]",
                             block.name,
                             block.value_kind.as_str(),
+                            block.sampler.as_str(),
                             block.lower,
                             block.upper
                         )
                     } else {
-                        format!("{}:scalar:{}", block.name, block.value_kind.as_str())
+                        format!(
+                            "{}:scalar:{}:{}",
+                            block.name,
+                            block.value_kind.as_str(),
+                            block.sampler.as_str()
+                        )
                     }
                 })
                 .collect::<Vec<_>>()
                 .join(", ")
         );
         eprintln!("  scalar parameters:    {}", dim);
+        eprintln!("  rwmh blocks:          {}", rwmh_block_count);
+        eprintln!("  slice blocks:         {}", slice_block_count);
         eprintln!(
-            "  generated C sweeps:   {}/{} continuous blocks",
-            generated_sweep_count, continuous_block_count
+            "  generated C sweeps:   {}/{} rwmh blocks",
+            generated_sweep_count, rwmh_block_count
         );
         eprintln!(
-            "  fused adapt sweeps:   {}/{} continuous blocks",
-            fused_sweep_count, continuous_block_count
+            "  fused adapt sweeps:   {}/{} rwmh blocks",
+            fused_sweep_count, rwmh_block_count
         );
         eprintln!(
-            "  frozen C sweeps:      {}/{} continuous blocks",
-            production_sweep_count, continuous_block_count
+            "  frozen C sweeps:      {}/{} rwmh blocks",
+            production_sweep_count, rwmh_block_count
         );
         eprintln!(
             "  full posterior logp:  {}",
@@ -1924,6 +2339,9 @@ fn run_block_sampler(
     }
 
     let start = std::time::Instant::now();
+    let mut slice_local_evaluations = 0u64;
+    let mut slice_step_outs = 0u64;
+    let mut slice_shrink_rejections = 0u64;
     let mut progress = ProgressDisplay::new(total_iters);
     if !cfg.quiet {
         progress.update(0);
@@ -1937,9 +2355,58 @@ fn run_block_sampler(
         } else {
             (1.0, 1.0)
         };
+        let slice_adapt_gain = if adapting && !slice_positions.is_empty() {
+            ((iter as f64) + 10.0).powf(-0.6)
+        } else {
+            0.0
+        };
 
         for block in &blocks {
             if block.value_kind == ValueKind::Continuous {
+                if block.sampler == SamplerKind::Slice {
+                    for local in 0..block.len {
+                        let index = (local + 1) as c_int;
+                        let position = block.offset + local;
+                        let old_value = theta[position];
+                        let old_local = unsafe { (block.f)(theta.as_ptr(), index) };
+                        if !old_local.is_finite() {
+                            eprintln!(
+                                "slice block {}({}) gave non-finite current local logp: {}",
+                                block.name, index, old_local
+                            );
+                            process::exit(1);
+                        }
+
+                        let update = slice_update_coordinate(
+                            posterior,
+                            block,
+                            &mut theta,
+                            index,
+                            position,
+                            old_local,
+                            proposal_scales[position],
+                            &mut rng,
+                        );
+                        current_logp += update.new_local - old_local;
+                        coordinate_accepts[position] += 1;
+                        accepted_sweep = true;
+                        slice_local_evaluations = slice_local_evaluations.saturating_add(update.evaluations);
+                        slice_step_outs = slice_step_outs.saturating_add(update.step_outs);
+                        slice_shrink_rejections = slice_shrink_rejections.saturating_add(update.shrink_rejections);
+
+                        if adapting {
+                            coordinate_adapt_accepts[position] += 1;
+                            adapt_slice_width(
+                                &mut proposal_scales[position],
+                                &mut tuning_factors[position],
+                                (update.new_value - old_value).abs(),
+                                slice_adapt_gain,
+                            );
+                        }
+                    }
+                    continue;
+                }
+
                 if !adapting {
                     if let Some(sweep_fn) = block.continuous_production_sweep {
                         for local in 0..block.len {
@@ -2352,12 +2819,14 @@ fn run_block_sampler(
     if !cfg.quiet {
         let seconds = start.elapsed().as_secs_f64();
         let total_updates = (total_iters as u64).saturating_mul(dim as u64);
-        let continuous_proposals =
-            (total_iters as u64).saturating_mul(continuous_positions.len() as u64);
-        let continuous_accepts: u64 = continuous_positions
+        let rwmh_proposals =
+            (total_iters as u64).saturating_mul(rwmh_positions.len() as u64);
+        let rwmh_accepts: u64 = rwmh_positions
             .iter()
             .map(|&position| coordinate_accepts[position])
             .sum();
+        let slice_updates =
+            (total_iters as u64).saturating_mul(slice_positions.len() as u64);
         let discrete_position_count = dim - continuous_positions.len();
         let discrete_updates =
             (total_iters as u64).saturating_mul(discrete_position_count as u64);
@@ -2374,14 +2843,14 @@ fn run_block_sampler(
         eprintln!("  scalar updates:       {}", total_updates);
         eprintln!("  saved samples:        {}", cfg.samples);
 
-        if !continuous_positions.is_empty() {
+        if !rwmh_positions.is_empty() {
             let mut scale_min = f64::INFINITY;
             let mut scale_max = f64::NEG_INFINITY;
             let mut scale_sum = 0.0;
             let mut rate_min = f64::INFINITY;
             let mut rate_max = f64::NEG_INFINITY;
             let mut rate_sum = 0.0;
-            for &position in &continuous_positions {
+            for &position in &rwmh_positions {
                 let scale = proposal_scales[position];
                 scale_min = scale_min.min(scale);
                 scale_max = scale_max.max(scale);
@@ -2392,24 +2861,55 @@ fn run_block_sampler(
                 rate_max = rate_max.max(rate);
                 rate_sum += rate;
             }
-            let count = continuous_positions.len() as f64;
+            let count = rwmh_positions.len() as f64;
             eprintln!(
-                "  continuous accept:    {:.4}",
-                continuous_accepts as f64 / continuous_proposals.max(1) as f64
+                "  rwmh accept:          {:.4}",
+                rwmh_accepts as f64 / rwmh_proposals.max(1) as f64
             );
             eprintln!(
-                "  per-coordinate rate:  mean {:.4}, min {:.4}, max {:.4}",
+                "  rwmh coord rate:      mean {:.4}, min {:.4}, max {:.4}",
                 rate_sum / count,
                 rate_min,
                 rate_max
             );
             eprintln!(
-                "  proposal scale:       mean {:.6e}, min {:.6e}, max {:.6e}",
+                "  rwmh proposal sd:     mean {:.6e}, min {:.6e}, max {:.6e}",
                 scale_sum / count,
                 scale_min,
                 scale_max
             );
-            eprintln!("  target accept:        {:.4}", cfg.target_accept);
+            eprintln!("  rwmh target accept:   {:.4}", cfg.target_accept);
+        }
+        if !slice_positions.is_empty() {
+            let mut width_min = f64::INFINITY;
+            let mut width_max = f64::NEG_INFINITY;
+            let mut width_sum = 0.0;
+            for &position in &slice_positions {
+                let width = proposal_scales[position];
+                width_min = width_min.min(width);
+                width_max = width_max.max(width);
+                width_sum += width;
+            }
+            let count = slice_positions.len() as f64;
+            let updates = slice_updates.max(1) as f64;
+            eprintln!(
+                "  slice width:          mean {:.6e}, min {:.6e}, max {:.6e}",
+                width_sum / count,
+                width_min,
+                width_max
+            );
+            eprintln!(
+                "  slice local evals:    {:.3} per update",
+                slice_local_evaluations as f64 / updates
+            );
+            eprintln!(
+                "  slice step-outs:      {:.3} per update",
+                slice_step_outs as f64 / updates
+            );
+            eprintln!(
+                "  slice shrink rejects: {:.3} per update",
+                slice_shrink_rejections as f64 / updates
+            );
         }
         if discrete_updates > 0 {
             eprintln!(
@@ -2432,6 +2932,7 @@ fn run_block_sampler(
             retained_output.description(cfg)
         );
     }
+
 }
 
 fn run_full_scalar_sampler(
@@ -2816,4 +3317,100 @@ mod tests {
         assert_eq!(f64_at(88), 8.0);
         assert_eq!(f64_at(96), 10.0);
     }
+    #[test]
+    fn block_spec_accepts_slice_sampler() {
+        let spec = parse_block_spec("u:4:12:indexed:slice");
+        assert_eq!(spec.name, "u");
+        assert_eq!(spec.offset, 4);
+        assert_eq!(spec.len, 12);
+        assert_eq!(spec.value_kind, ValueKind::Continuous);
+        assert_eq!(spec.sampler, SamplerKind::Slice);
+    }
+
+    #[test]
+    fn slice_sampler_has_standard_normal_moments() {
+        unsafe extern "C" fn standard_normal_block(theta: *const f64, _index: c_int) -> f64 {
+            let x = unsafe { *theta };
+            -0.5 * x * x
+        }
+
+        let posterior = std::mem::ManuallyDrop::new(PosteriorLib {
+            handle: std::ptr::null_mut(),
+            logp: None,
+            logp_batch: None,
+            init: None,
+            free: None,
+            cache_init: None,
+            cache_free: None,
+            cache_snapshot: None,
+            cache_restore: None,
+            cache_initialized: false,
+            initialized: false,
+            mode: EvalMode::Scalar,
+            one_out: [0.0; 1],
+        });
+        let block = RuntimeBlock {
+            name: "x".to_string(),
+            offset: 0,
+            len: 1,
+            value_kind: ValueKind::Continuous,
+            sampler: SamplerKind::Slice,
+            lower: 0,
+            upper: 0,
+            discrete_state_count: 0,
+            f: standard_normal_block,
+            continuous_adaptive_sweep: None,
+            continuous_production_sweep: None,
+            continuous_sweep: None,
+            scalar_candidate: None,
+            scalar_probe: None,
+            scalar_slice_try: None,
+            scalar_accept: None,
+            scalar_reject: None,
+            cache_update: None,
+            cache_undo: None,
+            cache_update_reversible: false,
+        };
+        let mut theta = [0.0f64];
+        let mut rng = Xoshiro256StarStar::new(0x51_1ce_5eed);
+        let mut width = SLICE_INITIAL_WIDTH;
+        let mut tuning = 1.0;
+        let warmup = 2_000usize;
+        let samples = 100_000usize;
+        let mut sum = 0.0;
+        let mut sumsq = 0.0;
+
+        for iter in 1..=(warmup + samples) {
+            let old_value = theta[0];
+            let old_local = -0.5 * old_value * old_value;
+            let update = slice_update_coordinate(
+                &posterior,
+                &block,
+                &mut theta,
+                1,
+                0,
+                old_local,
+                width,
+                &mut rng,
+            );
+            if iter <= warmup {
+                adapt_slice_width(
+                    &mut width,
+                    &mut tuning,
+                    (update.new_value - old_value).abs(),
+                    ((iter as f64) + 10.0).powf(-0.6),
+                );
+            } else {
+                sum += theta[0];
+                sumsq += theta[0] * theta[0];
+            }
+        }
+
+        let mean = sum / samples as f64;
+        let variance = sumsq / samples as f64 - mean * mean;
+        assert!(mean.abs() < 0.025, "mean={mean}");
+        assert!((variance - 1.0).abs() < 0.04, "variance={variance}");
+        assert!(width.is_finite() && width > 0.0, "width={width}");
+    }
+
 }

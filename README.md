@@ -138,6 +138,19 @@ exp(mean(draws[, "logsigma[1]"]))
 sigma_true
 ```
 
+## Choosing RWMH or slice sampling by parameter
+
+Continuous parameters use the adaptive scalar random-walk Metropolis sampler by default. The sampler can be selected independently for each parameter declaration:
+
+```text
+param beta(p) save=mean sampler=rwmh;
+param u(n, p) sampler=slice;
+```
+
+`sampler=slice` uses scalar stepping-out/shrinkage slice sampling. Its width is adapted during burn-in and then frozen for retained sampling. RWMH and slice declarations can be mixed in the same model, and both use the same parameter-local `block` target and exact transactional `cache`/`update` machinery. Bounded `dparam` declarations continue to use exact finite-state Gibbs updates.
+
+The `save=mean` and `sampler=` modifiers are independent and may be written in either order, for example `param u(n, p) sampler=slice save=mean;`.
+
 ## Optimizing the regression with a deterministic cache
 
 In the plain model, every update to one coefficient rebuilds the whole linear predictor:

@@ -1,7 +1,7 @@
 Package: hobbs
 Type: Package
 Title: High dimensiOnal Bayesian omniBus Sampler
-Version: 0.3.8
+Version: 0.3.9
 Authors@R: person("Mike", "Kleinsasser", email = "mkleinsa@umich.edu", 
     role = c("aut", "cre"))
 Description: Enables high dimensional statistical modeling using Bayesian 
