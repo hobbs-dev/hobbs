@@ -34,3 +34,46 @@ for (i = 1:n) y(i) ~ dbinom(m, inv_logit(eta(1)));
   )
 })
 
+test_that("dbinom matches Stan and JAGS", {
+  skip_if_reference_samplers_missing()
+  set.seed(123)
+  m <- 8L
+  truth <- 0.62
+  y <- rbinom(70, m, truth)
+  n <- length(y)
+
+  hobbs_model <- 'param eta(1);
+block eta(1) {
+eta(1) ~ dnorm(0, 2);
+for (i = 1:n) y(i) ~ dbinom(m, inv_logit(eta(1)));
+}'
+
+  stan_model <- '
+data {
+  int<lower=1> n;
+  int<lower=1> m;
+  array[n] int<lower=0> y;
+}
+parameters {
+  vector[1] eta;
+}
+model {
+  eta[1] ~ normal(0, 2);
+  for (i in 1:n) y[i] ~ binomial(m, inv_logit(eta[1]));
+}'
+
+  jags_model <- '
+model {
+  eta[1] ~ dnorm(0, 0.25)
+  p <- ilogit(eta[1])
+  for (i in 1:n) y[i] ~ dbin(p, m)
+}'
+
+  data <- list(n = n, y = y, m = m)
+  d_hobbs <- hobbs_test_draws(hobbs_model, list(y = y, m = m))
+  d_stan <- stan_test_draws(stan_model, data, "eta")
+  d_jags <- jags_test_draws(jags_model, data, "eta")
+
+  expect_posterior_matches_reference(d_hobbs, d_stan, d_jags, "eta[1]")
+})
+
