@@ -11,7 +11,7 @@ License: GPL-3
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 SystemRequirements: Cargo (Rust's package manager), rustc, C compiler
-URL: https://github.com/hobbs-dev/hobbs
+URL: https://hobbs-dev.github.io/
 BugReports: https://github.com/hobbs-dev/hobbs/issues
 Suggests:
     testthat (>= 3.0.0),
