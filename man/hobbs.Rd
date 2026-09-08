@@ -77,8 +77,8 @@ The R front end translates the model and R data into optimized C code and
 compiles it as a shared library. A reusable Rust runtime then performs the
 MCMC sweeps, sampler adaptation, output, and diagnostics. In block mode,
 model-specific posterior calculations and deterministic cache updates remain
-in generated C so that each scalar update can perform only the work that
-its dependency structure requires.
+in generated C so that each scalar update can perform only the work that its
+dependency structure requires.
 }
 \details{
 The preferred interface declares model parameters directly in the model
@@ -139,8 +139,8 @@ updates by default. Adding \code{sampler=slice} to a continuous parameter
 declaration selects a stepping-out/shrinkage slice update for every scalar
 coordinate in that declaration. Bounded discrete coordinates declared with,
 for example, \verb{dparam z(n, 0, 1);} are updated by evaluating their local block
-target over every value in the declared support and drawing from the resulting
-finite-state conditional distribution.
+target over every value in the declared support and drawing from the
+resulting finite-state conditional distribution.
 }
 
 \section{Persistent deterministic caches}{
