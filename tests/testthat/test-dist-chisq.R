@@ -62,7 +62,7 @@ model {
   jags_model <- '
 model {
   log_df[1] ~ dnorm(1, 0.25)
-  for (i in 1:n) y[i] ~ dchisqr(exp(log_df[1]))
+  for (i in 1:n) { y[i] ~ dchisqr(exp(log_df[1])) }
 }'
 
   data <- list(n = n, y = y)

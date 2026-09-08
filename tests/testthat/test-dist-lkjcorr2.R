@@ -72,7 +72,7 @@ model {
 model {
   log_eta[1] ~ dnorm(0, 0.25)
   eta <- exp(log_eta[1])
-  for (i in 1:n) u[i] ~ dbeta(eta, eta)
+  for (i in 1:n) { u[i] ~ dbeta(eta, eta) }
 }'
 
   d_hobbs <- hobbs_test_draws(hobbs_model, list(Rdat = Rdat))

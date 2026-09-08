@@ -66,7 +66,7 @@ model {
 model {
   eta[1] ~ dnorm(0, 0.25)
   p <- ilogit(eta[1])
-  for (i in 1:n) y[i] ~ dbin(p, m)
+  for (i in 1:n) { y[i] ~ dbin(p, m) }
 }'
 
   data <- list(n = n, y = y, m = m)

@@ -68,7 +68,7 @@ model {
   jags_model <- '
 model {
   log_rate[1] ~ dnorm(0, 0.25)
-  for (i in 1:n) inv_y[i] ~ dgamma(shape, exp(log_rate[1]))
+  for (i in 1:n) { inv_y[i] ~ dgamma(shape, exp(log_rate[1])) }
 }'
 
   d_hobbs <- hobbs_test_draws(hobbs_model, list(y = y, shape = shape))

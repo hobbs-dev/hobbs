@@ -71,7 +71,7 @@ model {
 model {
   eta[1] ~ dnorm(0, 0.25)
   p <- ilogit(eta[1])
-  for (i in 1:n) y[i] ~ dnegbin(p, size)
+  for (i in 1:n) { y[i] ~ dnegbin(p, size) }
 }'
 
   data <- list(n = n, y = y, size = size)

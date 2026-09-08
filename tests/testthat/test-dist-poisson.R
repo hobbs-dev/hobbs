@@ -63,7 +63,7 @@ model {
 model {
   eta[1] ~ dnorm(0, 0.25)
   lambda <- exp(eta[1])
-  for (i in 1:n) y[i] ~ dpois(lambda)
+  for (i in 1:n) { y[i] ~ dpois(lambda) }
 }'
 
   data <- list(n = n, y = y)

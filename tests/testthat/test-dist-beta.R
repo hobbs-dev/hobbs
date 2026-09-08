@@ -65,7 +65,7 @@ model {
   jags_model <- '
 model {
   log_a[1] ~ dnorm(0, 0.25)
-  for (i in 1:n) y[i] ~ dbeta(exp(log_a[1]), b)
+  for (i in 1:n) { y[i] ~ dbeta(exp(log_a[1]), b) }
 }'
 
   data <- list(n = n, y = y, b = b)

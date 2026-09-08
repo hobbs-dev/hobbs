@@ -62,7 +62,7 @@ model {
   jags_model <- '
 model {
   loc[1] ~ dnorm(0, 0.1111111111111111)
-  for (i in 1:n) y[i] ~ dt(loc[1], 1, 1)
+  for (i in 1:n) { y[i] ~ dt(loc[1], 1, 1) }
 }'
 
   data <- list(n = n, y = y)

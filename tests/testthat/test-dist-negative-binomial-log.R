@@ -68,7 +68,7 @@ model {
   eta[1] ~ dnorm(0, 0.25)
   mu <- exp(eta[1])
   p <- size / (size + mu)
-  for (i in 1:n) y[i] ~ dnegbin(p, size)
+  for (i in 1:n) { y[i] ~ dnegbin(p, size) }
 }'
 
   data <- list(n = n, y = y, size = size)

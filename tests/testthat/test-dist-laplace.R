@@ -65,7 +65,7 @@ model {
   jags_model <- '
 model {
   loc[1] ~ dnorm(0, 0.1111111111111111)
-  for (i in 1:n) y[i] ~ ddexp(loc[1], 1 / scale)
+  for (i in 1:n) { y[i] ~ ddexp(loc[1], 1 / scale) }
 }'
 
   data <- list(n = n, y = y, scale = scale)

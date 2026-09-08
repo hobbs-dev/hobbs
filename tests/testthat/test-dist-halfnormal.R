@@ -65,7 +65,7 @@ model {
 model {
   log_sd[1] ~ dnorm(0, 0.25)
   tau <- exp(-2 * log_sd[1])
-  for (i in 1:n) y[i] ~ dnorm(0, tau)
+  for (i in 1:n) { y[i] ~ dnorm(0, tau) }
 }'
 
   data <- list(n = n, y = y)

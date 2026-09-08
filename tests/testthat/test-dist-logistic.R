@@ -64,7 +64,7 @@ model {
   jags_model <- '
 model {
   loc[1] ~ dnorm(0, 0.1111111111111111)
-  for (i in 1:n) y[i] ~ dlogis(loc[1], 1 / scale)
+  for (i in 1:n) { y[i] ~ dlogis(loc[1], 1 / scale) }
 }'
 
   d_hobbs <- hobbs_test_draws(hobbs_model, list(y = y))

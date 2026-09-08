@@ -95,8 +95,9 @@ model {
       R[a, b] <- equals(a, b) / s
     }
   }
-  for (i in 1:n)
+  for (i in 1:n) {
     W[i, 1:k, 1:k] ~ dwish(R[1:k, 1:k], df)
+  }
 }'
 
   d_hobbs <- hobbs_test_draws(hobbs_model, list(W = W, df = df))

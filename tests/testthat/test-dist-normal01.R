@@ -29,7 +29,7 @@ for (i = 1:n) y(i) - mu(1) ~ normal01();
   posterior_sd <- sqrt(posterior_var)
 
   expect_equal(mean(d$`mu[1]`), posterior_mean, tolerance = 0.025)
-  expect_equal(sd(d$`mu[1]`), posterior_sd, tolerance = 0.015)
+  expect_lt(abs(sd(d$`mu[1]`) - posterior_sd), 0.015)
 })
 
 test_that("normal01 matches Stan and JAGS", {
@@ -61,7 +61,7 @@ model {
   jags_model <- '
 model {
   mu[1] ~ dnorm(0, 0.1111111111111111)
-  for (i in 1:n) y[i] ~ dnorm(mu[1], 1)
+  for (i in 1:n) { y[i] ~ dnorm(mu[1], 1) }
 }'
 
   data <- list(n = n, y = y)

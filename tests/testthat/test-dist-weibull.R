@@ -67,7 +67,7 @@ model {
   log_scale[1] ~ dnorm(0, 0.25)
   scale <- exp(log_scale[1])
   lambda <- pow(scale, -shape)
-  for (i in 1:n) y[i] ~ dweib(shape, lambda)
+  for (i in 1:n) { y[i] ~ dweib(shape, lambda) }
 }'
 
   data <- list(n = n, y = y, shape = shape)

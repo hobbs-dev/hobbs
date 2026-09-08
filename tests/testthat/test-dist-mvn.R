@@ -84,7 +84,7 @@ model {
   m[1] <- mu1[1]
   m[2] <- 0.25
   m[3] <- -0.2
-  for (i in 1:n) Y[i, 1:3] ~ dmnorm(m[1:3], Omega[1:3, 1:3])
+  for (i in 1:n) { Y[i, 1:3] ~ dmnorm(m[1:3], Omega[1:3, 1:3]) }
 }'
 
   d_hobbs <- hobbs_test_draws(hobbs_model, list(Y = Y, Sigma = Sigma))

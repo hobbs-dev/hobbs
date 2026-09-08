@@ -65,7 +65,7 @@ model {
 model {
   eta[1] ~ dnorm(0, 0.25)
   p <- 1 - exp(-exp(eta[1]))
-  for (i in 1:n) y[i] ~ dbern(p)
+  for (i in 1:n) { y[i] ~ dbern(p) }
 }'
 
   d_hobbs <- hobbs_test_draws(hobbs_model, list(y = y))

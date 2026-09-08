@@ -122,8 +122,8 @@ block b(1) {
     expect_identical(vapply(fit$blocks, `[[`, character(1), "sampler"), c("slice", "rwmh"))
 
     draws <- read_hobbs(fit)
-    expect_equal(mean(draws$`a[1]`), 0.5, tolerance = 0.12)
-    expect_equal(mean(draws$`b[1]`), -0.5, tolerance = 0.12)
+    expect_lt(abs(mean(draws$`a[1]`) - 0.5), 0.12)
+    expect_lt(abs(mean(draws$`b[1]`) - (-0.5)), 0.12)
 })
 
 

@@ -88,7 +88,7 @@ model {
 model {
   mu[1] ~ dnorm(0, 0.1111111111111111)
   tau <- 1 / pow(sigma, 2)
-  for (i in 1:n) y[i] ~ dnorm(mu[1], tau)
+  for (i in 1:n) { y[i] ~ dnorm(mu[1], tau) }
 }'
 
   data <- list(n = n, y = y, sigma = sigma)

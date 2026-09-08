@@ -62,7 +62,7 @@ model {
   jags_model <- '
 model {
   log_rate[1] ~ dnorm(0, 0.25)
-  for (i in 1:n) y[i] ~ dexp(exp(log_rate[1]))
+  for (i in 1:n) { y[i] ~ dexp(exp(log_rate[1])) }
 }'
 
   data <- list(n = n, y = y)

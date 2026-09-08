@@ -68,7 +68,7 @@ model {
 model {
   log_alpha[1] ~ dnorm(1, 0.25)
   alpha <- exp(log_alpha[1])
-  for (i in 1:n) y[i] ~ dpar(alpha, xmin)
+  for (i in 1:n) { y[i] ~ dpar(alpha, xmin) }
 }'
 
   d_hobbs <- hobbs_test_draws(hobbs_model, list(y = y, xmin = xmin))
