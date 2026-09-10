@@ -63,7 +63,8 @@ jobs:
             build-essential \
             libcurl4-openssl-dev \
             libssl-dev \
-            libxml2-dev
+            libxml2-dev \
+            tidy
 
       - name: Install R dependencies
         uses: r-lib/actions/setup-r-dependencies@v2
@@ -71,6 +72,12 @@ jobs:
           extra-packages: |
             any::rcmdcheck
             any::testthat
+            any::BH
+            any::Rcpp
+            any::RcppEigen
+            any::StanHeaders
+            any::rstan
+            any::rjags
           needs: check
 
       - name: Show toolchain
@@ -114,7 +121,10 @@ jobs:
           print(hobbs_check_toolchain())
 
           cat("\n--- hobbs_build_sampler() ---\n")
-          sampler <- hobbs_build_sampler(rebuild = TRUE, quiet = FALSE)
+          sampler <- hobbs_build_sampler(
+            rebuild = TRUE,
+            quiet = FALSE
+          )
           print(sampler)
 
           cat("\n--- hobbs_check_sampler() ---\n")
