@@ -1,0 +1,141 @@
+name: R CMD check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  R-CMD-check:
+    name: ${{ matrix.config.os }} / R ${{ matrix.config.r }}
+    runs-on: ${{ matrix.config.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - { os: windows-latest, r: "release" }
+          - { os: macos-latest,   r: "release" }
+          - { os: ubuntu-latest,  r: "release" }
+
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      R_KEEP_PKG_SOURCE: yes
+      _R_CHECK_CRAN_INCOMING_REMOTE_: false
+
+    steps:
+      # ------------------------------------------------------------
+      # Checkout
+      # ------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------
+      # R
+      # ------------------------------------------------------------
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: ${{ matrix.config.r }}
+          use-public-rspm: true
+
+      # ------------------------------------------------------------
+      # Rust
+      # ------------------------------------------------------------
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Show Rust toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      # ------------------------------------------------------------
+      # Linux system dependencies
+      # ------------------------------------------------------------
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libcurl4-openssl-dev \
+            libssl-dev \
+            libxml2-dev
+
+      # ------------------------------------------------------------
+      # R package dependencies
+      # ------------------------------------------------------------
+      - name: Install R dependencies
+        uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: |
+            any::rcmdcheck
+            any::testthat
+          needs: check
+
+      # ------------------------------------------------------------
+      # Diagnostic information
+      # ------------------------------------------------------------
+      - name: Show R configuration
+        shell: Rscript {0}
+        run: |
+          cat("R version:\n")
+          print(R.version)
+
+          cat("\nPlatform:\n")
+          print(R.version$platform)
+
+          cat("\nR.home():\n")
+          print(R.home())
+
+          cat("\nCC:\n")
+          system("R CMD config CC")
+
+          cat("\nCXX:\n")
+          system("R CMD config CXX")
+
+      # ------------------------------------------------------------
+      # Check HOBBS toolchain explicitly
+      #
+      # This catches problems before the full test suite and makes
+      # Windows loader/toolchain errors much easier to diagnose.
+      # ------------------------------------------------------------
+      - name: Install HOBBS
+        shell: Rscript {0}
+        run: |
+          install.packages(
+            ".",
+            repos = NULL,
+            type = "source"
+          )
+
+      - name: Check HOBBS toolchain
+        shell: Rscript {0}
+        run: |
+          library(hobbs)
+
+          cat("\n--- hobbs_check_toolchain() ---\n")
+          hobbs_check_toolchain()
+
+          cat("\n--- hobbs_build_sampler() ---\n")
+          hobbs_build_sampler()
+
+          cat("\n--- hobbs_check_sampler() ---\n")
+          hobbs_check_sampler()
+
+      # ------------------------------------------------------------
+      # CRAN-style package check
+      # ------------------------------------------------------------
+      - name: R CMD check --as-cran
+        uses: r-lib/actions/check-r-package@v2
+        with:
+          args: 'c("--as-cran")'
+          error-on: '"error"'
+          upload-snapshots: true
