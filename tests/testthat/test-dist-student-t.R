@@ -1,4 +1,5 @@
 test_that("dt recovers its location", {
+  skip_on_cran()
   set.seed(110); truth <- -0.6; df <- 5; y <- truth + rt(80, df)
   model <- 'param loc(1);
 block loc(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ dt(df, loc(1), 1.0);
 })
 
 test_that("dt gives the correct posterior for its location", {
+  skip_on_cran()
   set.seed(110)
   truth <- -0.6
   df <- 5
@@ -35,6 +37,7 @@ for (i = 1:n) y(i) ~ dt(df, loc(1), 1.0);
 })
 
 test_that("dt matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(110)
   truth <- -0.6

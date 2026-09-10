@@ -1,4 +1,5 @@
 test_that("dlnorm recovers meanlog", {
+  skip_on_cran()
   set.seed(112); truth <- 0.5; y <- rlnorm(70, truth, 0.6)
   model <- 'param meanlog(1);
 block meanlog(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ dlnorm(meanlog(1), 0.6);
 })
 
 test_that("dlnorm gives the correct posterior for meanlog", {
+  skip_on_cran()
   set.seed(112)
   truth <- 0.5
   sigma <- 0.6
@@ -34,6 +36,7 @@ for (i = 1:n) y(i) ~ dlnorm(meanlog(1), 0.6);
 })
 
 test_that("dlnorm matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(112)
   truth <- 0.5

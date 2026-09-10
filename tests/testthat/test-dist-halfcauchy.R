@@ -1,4 +1,5 @@
 test_that("dhalfcauchy recovers its scale", {
+  skip_on_cran()
   set.seed(118); truth <- 1.2; y <- r_halfcauchy(100, truth)
   model <- 'param log_scale(1);
 block log_scale(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ dhalfcauchy(exp(log_scale(1)));
 })
 
 test_that("dhalfcauchy gives the correct posterior for its scale", {
+  skip_on_cran()
   set.seed(118)
   truth <- 1.2
   y <- r_halfcauchy(100, truth)
@@ -36,6 +38,7 @@ for (i = 1:n) y(i) ~ dhalfcauchy(exp(log_scale(1)));
 })
 
 test_that("dhalfcauchy matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(118)
   truth <- 1.2

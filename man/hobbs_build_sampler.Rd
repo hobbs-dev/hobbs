@@ -18,3 +18,7 @@ Path to the hobbs executable.
 Builds the Rust command-line sampler bundled in this package. Usually this is
 called automatically by \code{hobbs()} the first time it is needed.
 }
+\examples{
+library(hobbs)
+hobbs_build_sampler()
+}

@@ -1,4 +1,5 @@
 test_that("dunif recovers a centered uniform location", {
+  skip_on_cran()
   set.seed(104); truth <- 0; y <- runif(80, truth - 1, truth + 1)
   model <- 'param mu(1);
 block mu(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ dunif(mu(1) - 1.0, mu(1) + 1.0);
 })
 
 test_that("dunif gives the correct posterior for a centered location", {
+  skip_on_cran()
   set.seed(104)
   truth <- 0
   y <- runif(80, truth - 1, truth + 1)
@@ -35,6 +37,7 @@ for (i = 1:n) y(i) ~ dunif(mu(1) - 1.0, mu(1) + 1.0);
 })
 
 test_that("dunif matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(104)
   truth <- 0

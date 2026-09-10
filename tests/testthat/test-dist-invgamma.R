@@ -1,4 +1,5 @@
 test_that("dinvgamma recovers its rate", {
+  skip_on_cran()
   set.seed(107); shape <- 4; truth <- 2.2; y <- 1 / rgamma(70, shape, rate = truth)
   model <- 'param log_rate(1);
 block log_rate(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ dinvgamma(shape, exp(log_rate(1)));
 })
 
 test_that("dinvgamma gives the correct posterior for its rate", {
+  skip_on_cran()
   set.seed(107)
   shape <- 4
   truth <- 2.2
@@ -37,6 +39,7 @@ for (i = 1:n) y(i) ~ dinvgamma(shape, exp(log_rate(1)));
 })
 
 test_that("dinvgamma matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(107)
   shape <- 4

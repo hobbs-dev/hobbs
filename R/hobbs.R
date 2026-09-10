@@ -6,6 +6,9 @@
 #' @param rebuild Logical. If TRUE, force a fresh cargo build.
 #' @param quiet Logical. If TRUE, suppress build output.
 #' @return Path to the hobbs executable.
+#' @examples
+#' library(hobbs)
+#' hobbs_build_sampler()
 #' @export
 hobbs_build_sampler <- function(rebuild = FALSE, quiet = TRUE) {
   src <- system.file("hobbs", package = "hobbs", mustWork = TRUE)
@@ -64,6 +67,9 @@ hobbs_build_sampler <- function(rebuild = FALSE, quiet = TRUE) {
 #'
 #' @return Invisibly returns a named character vector containing the paths to
 #'   `cargo`, `rustc`, and the detected C compiler.
+#' @examples
+#' library(hobbs)
+#' hobbs_check_toolchain()
 #' @export
 hobbs_check_toolchain <- function(quiet = FALSE, stop_on_error = FALSE) {
     if (!is.logical(quiet) || length(quiet) != 1L || is.na(quiet)) {
@@ -204,6 +210,9 @@ hobbs_check_toolchain <- function(quiet = FALSE, stop_on_error = FALSE) {
 #' @param quiet Logical. If `TRUE`, suppress build output and status messages.
 #'
 #' @return Invisibly returns the path to the installed hobbs sampler.
+#' @examples
+#' library(hobbs)
+#' hobbs_install_sampler()
 #' @export
 hobbs_install_sampler <- function(rebuild = FALSE, quiet = FALSE) {
     if (!is.logical(rebuild) || length(rebuild) != 1L || is.na(rebuild)) {
@@ -257,6 +266,9 @@ hobbs_install_sampler <- function(rebuild = FALSE, quiet = FALSE) {
 #'
 #' @return Invisibly returns `TRUE` when a compatible sampler is installed and
 #'   working, and `FALSE` otherwise.
+#' @examples
+#' library(hobbs)
+#' hobbs_check_sampler()
 #' @export
 hobbs_check_sampler <- function(quiet = FALSE) {
     if (!is.logical(quiet) || length(quiet) != 1L || is.na(quiet)) {
@@ -548,7 +560,6 @@ hobbs_check_sampler <- function(quiet = FALSE) {
 #'   [hobbs_install_sampler()], [hobbs_check_sampler()]
 #'
 #' @examples
-#' \dontrun{
 #' library(hobbs)
 #'
 #' set.seed(1)
@@ -604,7 +615,6 @@ hobbs_check_sampler <- function(quiet = FALSE) {
 #'
 #' draws <- read_hobbs(fit)
 #' colMeans(draws[paste0("beta[", seq_len(p), "]")])
-#' }
 #' @export
 
 hobbs <- function(model,
@@ -963,6 +973,63 @@ format_hobbs_seed <- function(seed) {
 #' @param max_records Optional maximum number of records to read.
 #' @param param_names Optional names for theta columns. Usually supplied automatically when reading a `hobbs_run` object returned by `hobbs()`.
 #' @return A data frame with columns `iter`, `accepted`, `logp`, and the saved parameter columns.
+#' @examples
+#' library(hobbs)
+#' 
+#' set.seed(1)
+#' n <- 200L
+#' p <- 4L
+#' X <- cbind(1, matrix(rnorm(n * (p - 1L)), nrow = n))
+#' beta_true <- c(0.5, 1, -0.75, 0.25)
+#' sigma_true <- 0.75
+#' y <- as.numeric(X %*% beta_true + rnorm(n, sd = sigma_true))
+#' 
+#' dat <- list(n = n, p = p, X = X, y = y)
+#' 
+#' model <- '
+#' param beta(p);
+#' param logsigma(1);
+#' 
+#' func llk() {
+#'   double sigma = exp(logsigma(1));
+#'   for (i = 1:n) {
+#'     y(i) ~ dnorm(mu(i), sigma);
+#'   }
+#' }
+#' 
+#' block beta(j) {
+#'   beta(j) ~ dnorm(0, 10);
+#'   llk();
+#' } cache mu(n) {
+#'   for (i = 1:n) {
+#'     for (k = 1:p) {
+#'       mu(i) += beta(k) * X(i, k);
+#'     }
+#'   }
+#' } update mu(n) {
+#'   for (i = 1:n) {
+#'     mu(i) += (proposal(beta(j)) - current(beta(j))) * X(i, j);
+#'   }
+#' }
+#' 
+#' block logsigma(1) {
+#'   logsigma(1) ~ dnorm(0, 2);
+#'   llk();
+#' }
+#' '
+#' 
+#' fit <- hobbs(
+#'     model = model,
+#'     data = dat,
+#'     samples = 2000,
+#'     burnin = 1000,
+#'     seed = 123,
+#'     out = "regression.bin"
+#' )
+#' 
+#' draws <- read_hobbs(fit)
+#' colMeans(draws[paste0("beta[", seq_len(p), "]")])
+#' 
 #' @export
 read_hobbs <- function(file, dim = NULL, max_records = NULL, param_names = NULL) {
   if (inherits(file, "hobbs_run")) {
@@ -1034,6 +1101,63 @@ is_hobbs_binary_file <- function(path) {
 #' @param file An `hobbs_run` object or path to a mean output file.
 #' @param param_names Optional parameter names. Usually supplied automatically.
 #' @return A one-row data frame with `saved`, `logp`, and posterior mean columns.
+#' @examples
+#' library(hobbs)
+#' 
+#' set.seed(1)
+#' n <- 200L
+#' p <- 4L
+#' X <- cbind(1, matrix(rnorm(n * (p - 1L)), nrow = n))
+#' beta_true <- c(0.5, 1, -0.75, 0.25)
+#' sigma_true <- 0.75
+#' y <- as.numeric(X %*% beta_true + rnorm(n, sd = sigma_true))
+#' 
+#' dat <- list(n = n, p = p, X = X, y = y)
+#' 
+#' model <- '
+#' param beta(p) save=mean;
+#' param logsigma(1);
+#' 
+#' func llk() {
+#'   double sigma = exp(logsigma(1));
+#'   for (i = 1:n) {
+#'     y(i) ~ dnorm(mu(i), sigma);
+#'   }
+#' }
+#' 
+#' block beta(j) {
+#'   beta(j) ~ dnorm(0, 10);
+#'   llk();
+#' } cache mu(n) {
+#'   for (i = 1:n) {
+#'     for (k = 1:p) {
+#'       mu(i) += beta(k) * X(i, k);
+#'     }
+#'   }
+#' } update mu(n) {
+#'   for (i = 1:n) {
+#'     mu(i) += (proposal(beta(j)) - current(beta(j))) * X(i, j);
+#'   }
+#' }
+#' 
+#' block logsigma(1) {
+#'   logsigma(1) ~ dnorm(0, 2);
+#'   llk();
+#' }
+#' '
+#' 
+#' fit <- hobbs(
+#'     model = model,
+#'     data = dat,
+#'     samples = 2000,
+#'     burnin = 1000,
+#'     seed = 123,
+#'     out = "regression.bin"
+#' )
+#' 
+#' draws <- read_hobbs(fit)
+#' draws_mean <- read_hobbs_mean(fit)
+#' 
 #' @export
 read_hobbs_mean <- function(file, param_names = NULL) {
   dim <- NULL
@@ -1092,6 +1216,9 @@ read_hobbs_mean <- function(file, param_names = NULL) {
 #' @param path Destination path.
 #' @param batch Logical. If TRUE, write a batch-capable model.
 #' @return Path to the written C file.
+#' @examples
+#' library(hobbs)
+#' hobbs_example_model()
 #' @export
 hobbs_example_model <- function(path = tempfile(fileext = ".c"), batch = TRUE) {
   code <- if (isTRUE(batch)) example_batch_code() else example_scalar_code()

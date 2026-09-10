@@ -6,4 +6,5 @@
 ^.*\.DS_Store$
 ^inst/hobbs/\.cargo($|/)
 ^inst/hobbs/\Cargo($|/)
+^\.github$
 ^\.github\workflows$

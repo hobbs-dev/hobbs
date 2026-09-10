@@ -18,3 +18,7 @@ Invisibly returns the path to the installed hobbs sampler.
 Compiles and installs the bundled Rust sampler in the hobbs user cache.
 The compiled sampler is reused by subsequent hobbs sessions and models.
 }
+\examples{
+library(hobbs)
+hobbs_install_sampler()
+}

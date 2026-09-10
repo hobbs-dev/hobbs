@@ -1,4 +1,5 @@
 test_that("dwish recovers an isotropic scale", {
+  skip_on_cran()
   set.seed(131); n <- 35; k <- 2L; df <- 6; truth <- 1.25; S <- diag(truth, k); W <- matrix_draws_to_rows(rWishart(n, df, S))
   model <- 'param log_scale(1);
 block log_scale(1) {
@@ -11,6 +12,7 @@ for (i = 1:n) W(i, 1:4) ~ dwish(S, df, 2);
 })
 
 test_that("dwish gives the correct posterior for an isotropic scale", {
+  skip_on_cran()
   set.seed(131)
   n <- 35
   k <- 2L
@@ -49,6 +51,7 @@ for (i = 1:n) W(i, 1:4) ~ dwish(S, df, 2);
 })
 
 test_that("dwish matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(131)
   n <- 35

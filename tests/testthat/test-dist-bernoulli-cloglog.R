@@ -1,4 +1,5 @@
 test_that("bernoulli_cloglog recovers eta", {
+  skip_on_cran()
   set.seed(122); truth <- -0.35; y <- rbinom(120, 1, inv_cloglog_r(truth))
   model <- 'param eta(1);
 block eta(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ bernoulli_cloglog(eta(1));
 })
 
 test_that("bernoulli_cloglog gives the correct posterior", {
+  skip_on_cran()
   set.seed(122)
   truth <- -0.35
   y <- rbinom(120, 1, inv_cloglog_r(truth))
@@ -35,6 +37,7 @@ for (i = 1:n) y(i) ~ bernoulli_cloglog(eta(1));
 })
 
 test_that("bernoulli_cloglog matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(122)
   truth <- -0.35

@@ -1,4 +1,5 @@
 test_that("dhalfnorm recovers its scale", {
+  skip_on_cran()
   set.seed(117); truth <- 1.3; y <- r_halfnormal(80, truth)
   model <- 'param log_sd(1);
 block log_sd(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ dhalfnorm(exp(log_sd(1)));
 })
 
 test_that("dhalfnorm gives the correct posterior for its scale", {
+  skip_on_cran()
   set.seed(117)
   truth <- 1.3
   y <- r_halfnormal(80, truth)
@@ -36,6 +38,7 @@ for (i = 1:n) y(i) ~ dhalfnorm(exp(log_sd(1)));
 })
 
 test_that("dhalfnorm matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(117)
   truth <- 1.3

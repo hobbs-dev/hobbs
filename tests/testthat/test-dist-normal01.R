@@ -1,4 +1,5 @@
 test_that("normal01 recovers a location through standardized residuals", {
+  skip_on_cran()
   set.seed(102); truth <- -0.55; y <- rnorm(120, truth, 1)
   model <- 'param mu(1);
 block mu(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) - mu(1) ~ normal01();
 })
 
 test_that("normal01 gives the correct normal posterior", {
+  skip_on_cran()
   set.seed(102)
   truth <- -0.55
   sigma <- 1
@@ -33,6 +35,7 @@ for (i = 1:n) y(i) - mu(1) ~ normal01();
 })
 
 test_that("normal01 matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(102)
   truth <- -0.55

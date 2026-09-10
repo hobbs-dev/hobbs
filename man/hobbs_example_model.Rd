@@ -17,3 +17,7 @@ Path to the written C file.
 \description{
 Write an example C posterior model
 }
+\examples{
+library(hobbs)
+hobbs_example_model()
+}

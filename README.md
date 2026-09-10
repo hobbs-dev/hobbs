@@ -227,4 +227,4 @@ This optimization is most useful when `p` is large and parameters are updated on
 
 ## Next steps
 
-The same block syntax can be used for discrete parameters, sparse variable-selection models, random effects, and other models where only part of the likelihood changes for each parameter update. See <https://hobbs.github.io> for more examples and reference material.
+The same block syntax can be used for discrete parameters, sparse variable-selection models, random effects, and other models where only part of the likelihood changes for each parameter update. See <https://hobbs-dev.github.io> for more examples and reference material.

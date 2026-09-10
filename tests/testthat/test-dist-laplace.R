@@ -1,4 +1,5 @@
 test_that("dlaplace recovers its location", {
+  skip_on_cran()
   set.seed(114); truth <- -0.45; y <- r_laplace(80, truth, 0.7)
   model <- 'param loc(1);
 block loc(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ dlaplace(loc(1), 0.7);
 })
 
 test_that("dlaplace gives the correct posterior for its location", {
+  skip_on_cran()
   set.seed(114)
   truth <- -0.45
   scale <- 0.7
@@ -35,6 +37,7 @@ for (i = 1:n) y(i) ~ dlaplace(loc(1), 0.7);
 })
 
 test_that("dlaplace matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(114)
   truth <- -0.45

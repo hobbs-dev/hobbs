@@ -1,4 +1,5 @@
 test_that("dnbinom_log recovers log mean", {
+  skip_on_cran()
   set.seed(128); truth <- 0.8; mu <- exp(truth); y <- rnbinom(100, size = 4, mu = mu)
   model <- 'param eta(1);
 block eta(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ dnbinom_log(eta(1), 4);
 })
 
 test_that("dnbinom_log gives the correct posterior for log mean", {
+  skip_on_cran()
   set.seed(128)
   truth <- 0.8
   size <- 4
@@ -35,6 +37,7 @@ for (i = 1:n) y(i) ~ dnbinom_log(eta(1), 4);
 })
 
 test_that("dnbinom_log matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(128)
   truth <- 0.8

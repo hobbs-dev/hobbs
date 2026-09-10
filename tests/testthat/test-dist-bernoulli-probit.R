@@ -1,4 +1,5 @@
 test_that("bernoulli_probit recovers eta", {
+  skip_on_cran()
   set.seed(121); truth <- 0.6; y <- rbinom(120, 1, pnorm(truth))
   model <- 'param eta(1);
 block eta(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ bernoulli_probit(eta(1));
 })
 
 test_that("bernoulli_probit gives the correct posterior", {
+  skip_on_cran()
   set.seed(121)
   truth <- 0.6
   y <- rbinom(120, 1, pnorm(truth))
@@ -34,6 +36,7 @@ for (i = 1:n) y(i) ~ bernoulli_probit(eta(1));
 })
 
 test_that("bernoulli_probit matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(121)
   truth <- 0.6

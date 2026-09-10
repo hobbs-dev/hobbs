@@ -1,4 +1,5 @@
 test_that("dexp recovers its rate", {
+  skip_on_cran()
   set.seed(105); truth <- 1.7; y <- rexp(70, truth)
   model <- 'param log_rate(1);
 block log_rate(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ dexp(exp(log_rate(1)));
 })
 
 test_that("dexp gives the correct posterior for its rate", {
+  skip_on_cran()
   set.seed(105)
   truth <- 1.7
   y <- rexp(70, truth)
@@ -34,6 +36,7 @@ for (i = 1:n) y(i) ~ dexp(exp(log_rate(1)));
 })
 
 test_that("dexp matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(105)
   truth <- 1.7

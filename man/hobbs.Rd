@@ -222,7 +222,6 @@ is acceptable for the application.
 }
 
 \examples{
-\dontrun{
 library(hobbs)
 
 set.seed(1)
@@ -278,7 +277,6 @@ fit <- hobbs(
 
 draws <- read_hobbs(fit)
 colMeans(draws[paste0("beta[", seq_len(p), "]")])
-}
 }
 \seealso{
 \code{\link[=read_hobbs]{read_hobbs()}}, \code{\link[=read_hobbs_mean]{read_hobbs_mean()}}, \code{\link[=hobbs_check_toolchain]{hobbs_check_toolchain()}},

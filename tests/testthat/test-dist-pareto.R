@@ -1,4 +1,5 @@
 test_that("dpareto recovers alpha", {
+  skip_on_cran()
   set.seed(116); xmin <- 1; truth <- 3.2; y <- r_pareto(100, xmin, truth)
   model <- 'param log_alpha(1);
 block log_alpha(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ dpareto(xmin, exp(log_alpha(1)));
 })
 
 test_that("dpareto gives the correct posterior for alpha", {
+  skip_on_cran()
   set.seed(116)
   xmin <- 1
   truth <- 3.2
@@ -38,6 +40,7 @@ for (i = 1:n) y(i) ~ dpareto(xmin, exp(log_alpha(1)));
 })
 
 test_that("dpareto matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(116)
   xmin <- 1

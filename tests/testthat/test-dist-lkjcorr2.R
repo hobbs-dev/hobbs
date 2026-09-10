@@ -1,4 +1,5 @@
 test_that("dlkjcorr2 recovers eta", {
+  skip_on_cran()
   set.seed(133); n <- 80; truth <- 2.2; rho <- 2 * rbeta(n, truth, truth) - 1
   Rdat <- cbind(1, rho, rho, 1)
   model <- 'param log_eta(1);
@@ -10,6 +11,7 @@ for (i = 1:n) Rdat(i, 1:4) ~ dlkjcorr2(exp(log_eta(1)));
 })
 
 test_that("dlkjcorr2 gives the correct posterior for eta", {
+  skip_on_cran()
   set.seed(133)
   n <- 80
   truth <- 2.2
@@ -41,6 +43,7 @@ for (i = 1:n) Rdat(i, 1:4) ~ dlkjcorr2(exp(log_eta(1)));
 })
 
 test_that("dlkjcorr2 matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(133)
   n <- 80

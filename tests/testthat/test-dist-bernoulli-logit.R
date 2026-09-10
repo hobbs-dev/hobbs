@@ -1,4 +1,5 @@
 test_that("bernoulli_logit recovers eta", {
+  skip_on_cran()
   set.seed(120); truth <- 0.75; y <- rbinom(100, 1, inv_logit_r(truth))
   model <- 'param eta(1);
 block eta(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ bernoulli_logit(eta(1));
 })
 
 test_that("bernoulli_logit gives the correct posterior", {
+  skip_on_cran()
   set.seed(120)
   truth <- 0.75
   y <- rbinom(100, 1, inv_logit_r(truth))
@@ -34,6 +36,7 @@ for (i = 1:n) y(i) ~ bernoulli_logit(eta(1));
 })
 
 test_that("bernoulli_logit matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(120)
   truth <- 0.75

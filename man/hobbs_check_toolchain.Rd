@@ -20,3 +20,7 @@ Invisibly returns a named character vector containing the paths to
 Checks for Cargo and Rust, which are required to build the hobbs sampler,
 and a C compiler, which is required to compile hobbs models.
 }
+\examples{
+library(hobbs)
+hobbs_check_toolchain()
+}

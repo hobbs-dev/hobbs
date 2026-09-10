@@ -1,4 +1,5 @@
 test_that("dbeta recovers its first shape parameter", {
+  skip_on_cran()
   set.seed(108); truth <- 2.2; b <- 3.0; y <- rbeta(80, truth, b)
   model <- 'param log_a(1);
 block log_a(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ dbeta(exp(log_a(1)), b);
 })
 
 test_that("dbeta gives the correct posterior for its first shape parameter", {
+  skip_on_cran()
   set.seed(108)
   truth <- 2.2
   b <- 3.0
@@ -35,6 +37,7 @@ for (i = 1:n) y(i) ~ dbeta(exp(log_a(1)), b);
 })
 
 test_that("dbeta matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(108)
   truth <- 2.2

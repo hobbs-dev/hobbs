@@ -1,4 +1,5 @@
 test_that("dnorm recovers a normal location", {
+  skip_on_cran()
   set.seed(101); truth <- 0.7; y <- rnorm(60, truth, 1.1)
   model <- 'param mu(1);
 block mu(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ dnorm(mu(1), 1.1);
 })
 
 test_that("dnorm gives the correct normal posterior", {
+  skip_on_cran()
     set.seed(101)
     
     truth <- 0.7
@@ -57,6 +59,7 @@ test_that("dnorm gives the correct normal posterior", {
 })
 
 test_that("dnorm matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(101)
   truth <- 0.7

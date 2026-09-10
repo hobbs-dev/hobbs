@@ -1,4 +1,5 @@
 test_that("binomial_logit recovers eta", {
+  skip_on_cran()
   set.seed(124); m <- 8L; truth <- 0.55; y <- rbinom(70, m, inv_logit_r(truth))
   model <- 'param eta(1);
 block eta(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ binomial_logit(m, eta(1));
 })
 
 test_that("binomial_logit gives the correct posterior", {
+  skip_on_cran()
   set.seed(124)
   m <- 8L
   truth <- 0.55
@@ -35,6 +37,7 @@ for (i = 1:n) y(i) ~ binomial_logit(m, eta(1));
 })
 
 test_that("binomial_logit matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(124)
   m <- 8L

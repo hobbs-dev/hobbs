@@ -1,4 +1,5 @@
 test_that("dcauchy recovers its location", {
+  skip_on_cran()
   set.seed(109); truth <- 0.65; y <- rcauchy(90, truth, 1)
   model <- 'param loc(1);
 block loc(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ dcauchy(loc(1), 1.0);
 })
 
 test_that("dcauchy gives the correct posterior for its location", {
+  skip_on_cran()
   set.seed(109)
   truth <- 0.65
   y <- rcauchy(90, truth, 1)
@@ -34,6 +36,7 @@ for (i = 1:n) y(i) ~ dcauchy(loc(1), 1.0);
 })
 
 test_that("dcauchy matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(109)
   truth <- 0.65

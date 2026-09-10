@@ -59,6 +59,7 @@ test_that("slice code generation emits only the slice hot path", {
 })
 
 test_that("slice sampler recovers a normal posterior", {
+    skip_on_cran()
     set.seed(501)
     truth <- 0.65
     sigma <- 1.2
@@ -91,6 +92,7 @@ block mu(1) {
 })
 
 test_that("slice and rwmh can be mixed by parameter declaration", {
+    skip_on_cran()
     skip_if_hobbs_toolchain_missing()
     wd <- tempfile("hobbs-mixed-samplers-")
     dir.create(wd)
@@ -128,6 +130,7 @@ block b(1) {
 
 
 test_that("slice sampler preserves exact transactional caches", {
+    skip_on_cran()
     set.seed(503)
     truth <- -0.35
     y <- rnorm(60, truth, 1)

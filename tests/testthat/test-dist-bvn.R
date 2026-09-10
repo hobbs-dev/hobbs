@@ -1,4 +1,5 @@
 test_that("dbvn recovers a bivariate mean component", {
+  skip_on_cran()
   set.seed(129); n <- 70; truth <- 0.6; mu <- c(truth, -0.4); Sigma <- matrix(c(1, .35, .35, 1.4), 2, 2)
   Z <- matrix(rnorm(n * 2), n, 2); Y <- sweep(Z %*% chol(Sigma), 2, mu, "+")
   model <- 'param mu1(1);
@@ -11,6 +12,7 @@ for (i = 1:n) Y(i, 1:2) ~ dbvn(m, Sigma);
 })
 
 test_that("dbvn gives the correct posterior for a mean component", {
+  skip_on_cran()
   set.seed(129)
   n <- 70
   truth <- 0.6
@@ -42,6 +44,7 @@ for (i = 1:n) Y(i, 1:2) ~ dbvn(m, Sigma);
 })
 
 test_that("dbvn matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(129)
   n <- 70

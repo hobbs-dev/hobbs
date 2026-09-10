@@ -1,4 +1,5 @@
 test_that("dmvn recovers a multivariate mean component", {
+  skip_on_cran()
   set.seed(130); n <- 70; truth <- -0.55; mu <- c(truth, 0.25, -0.2); Sigma <- matrix(c(1,.2,.1,.2,1.2,.25,.1,.25,.9), 3, 3)
   Z <- matrix(rnorm(n * 3), n, 3); Y <- sweep(Z %*% chol(Sigma), 2, mu, "+")
   model <- 'param mu1(1);
@@ -11,6 +12,7 @@ for (i = 1:n) Y(i, 1:3) ~ dmvn(m, Sigma);
 })
 
 test_that("dmvn gives the correct posterior for a mean component", {
+  skip_on_cran()
   set.seed(130)
   n <- 70
   truth <- -0.55
@@ -43,6 +45,7 @@ for (i = 1:n) Y(i, 1:3) ~ dmvn(m, Sigma);
 })
 
 test_that("dmvn matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(130)
   n <- 70

@@ -1,4 +1,5 @@
 test_that("normal_sd1 recovers its mean", {
+  skip_on_cran()
   set.seed(103); truth <- 0.6; y <- rnorm(60, truth, 1)
   model <- 'param mu(1);
 block mu(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ normal_sd1(mu(1));
 })
 
 test_that("normal_sd1 gives the correct normal posterior", {
+  skip_on_cran()
   set.seed(103)
   truth <- 0.6
   sigma <- 1
@@ -33,6 +35,7 @@ for (i = 1:n) y(i) ~ normal_sd1(mu(1));
 })
 
 test_that("normal_sd1 matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(103)
   truth <- 0.6

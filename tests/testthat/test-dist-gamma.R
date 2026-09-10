@@ -1,4 +1,5 @@
 test_that("dgamma recovers its rate", {
+  skip_on_cran()
   set.seed(106); shape <- 2.5; truth <- 1.4; y <- rgamma(70, shape, rate = truth)
   model <- 'param log_rate(1);
 block log_rate(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ dgamma(shape, exp(log_rate(1)));
 })
 
 test_that("dgamma gives the correct posterior for its rate", {
+  skip_on_cran()
   set.seed(106)
   shape <- 2.5
   truth <- 1.4
@@ -35,6 +37,7 @@ for (i = 1:n) y(i) ~ dgamma(shape, exp(log_rate(1)));
 })
 
 test_that("dgamma matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(106)
   shape <- 2.5

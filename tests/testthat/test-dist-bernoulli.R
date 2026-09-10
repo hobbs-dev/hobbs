@@ -1,4 +1,5 @@
 test_that("dbern recovers probability", {
+  skip_on_cran()
   set.seed(119); truth <- 0.68; y <- rbinom(100, 1, truth)
   model <- 'param eta(1);
 block eta(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ dbern(inv_logit(eta(1)));
 })
 
 test_that("dbern gives the correct posterior", {
+  skip_on_cran()
   set.seed(119)
   truth <- 0.68
   y <- rbinom(100, 1, truth)
@@ -34,6 +36,7 @@ for (i = 1:n) y(i) ~ dbern(inv_logit(eta(1)));
 })
 
 test_that("dbern matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(119)
   truth <- 0.68

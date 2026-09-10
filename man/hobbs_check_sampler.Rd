@@ -17,3 +17,7 @@ working, and \code{FALSE} otherwise.
 Checks whether a compatible hobbs sampler is installed in the user cache
 and verifies that the executable can be started.
 }
+\examples{
+library(hobbs)
+hobbs_check_sampler()
+}

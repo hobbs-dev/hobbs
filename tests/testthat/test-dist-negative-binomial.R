@@ -1,4 +1,5 @@
 test_that("dnbinom recovers probability", {
+  skip_on_cran()
   set.seed(127); truth <- 0.58; y <- rnbinom(100, size = 4, prob = truth)
   model <- 'param eta(1);
 block eta(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ dnbinom(4, inv_logit(eta(1)));
 })
 
 test_that("dnbinom gives the correct posterior for probability", {
+  skip_on_cran()
   set.seed(127)
   truth <- 0.58
   size <- 4
@@ -35,6 +37,7 @@ for (i = 1:n) y(i) ~ dnbinom(4, inv_logit(eta(1)));
 })
 
 test_that("dnbinom matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(127)
   truth <- 0.58

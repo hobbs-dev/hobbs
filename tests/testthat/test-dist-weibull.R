@@ -1,4 +1,5 @@
 test_that("dweibull recovers its scale", {
+  skip_on_cran()
   set.seed(115); shape <- 1.8; truth <- 1.4; y <- rweibull(80, shape, truth)
   model <- 'param log_scale(1);
 block log_scale(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ dweibull(shape, exp(log_scale(1)));
 })
 
 test_that("dweibull gives the correct posterior for its scale", {
+  skip_on_cran()
   set.seed(115)
   shape <- 1.8
   truth <- 1.4
@@ -35,6 +37,7 @@ for (i = 1:n) y(i) ~ dweibull(shape, exp(log_scale(1)));
 })
 
 test_that("dweibull matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(115)
   shape <- 1.8

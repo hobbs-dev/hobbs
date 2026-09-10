@@ -1,4 +1,5 @@
 test_that("poisson_log recovers eta", {
+  skip_on_cran()
   set.seed(126); truth <- 1.0; y <- rpois(80, exp(truth))
   model <- 'param eta(1);
 block eta(1) {
@@ -9,6 +10,7 @@ for (i = 1:n) y(i) ~ poisson_log(eta(1));
 })
 
 test_that("poisson_log gives the correct posterior", {
+  skip_on_cran()
   set.seed(126)
   truth <- 1.0
   y <- rpois(80, exp(truth))
@@ -34,6 +36,7 @@ for (i = 1:n) y(i) ~ poisson_log(eta(1));
 })
 
 test_that("poisson_log matches Stan and JAGS", {
+  skip_on_cran()
   skip_if_reference_samplers_missing()
   set.seed(126)
   truth <- 1.0

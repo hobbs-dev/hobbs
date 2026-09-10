@@ -24,3 +24,61 @@ Reads the default binary chain. When an \code{hobbs_run} uses declaration-level
 \code{save=mean}, this returns the full draws for the unmarked parameters. Use
 \code{\link[=read_hobbs_mean]{read_hobbs_mean()}} for the one-row binary of mean-only parameters.
 }
+\examples{
+library(hobbs)
+
+set.seed(1)
+n <- 200L
+p <- 4L
+X <- cbind(1, matrix(rnorm(n * (p - 1L)), nrow = n))
+beta_true <- c(0.5, 1, -0.75, 0.25)
+sigma_true <- 0.75
+y <- as.numeric(X \%*\% beta_true + rnorm(n, sd = sigma_true))
+
+dat <- list(n = n, p = p, X = X, y = y)
+
+model <- '
+param beta(p);
+param logsigma(1);
+
+func llk() {
+  double sigma = exp(logsigma(1));
+  for (i = 1:n) {
+    y(i) ~ dnorm(mu(i), sigma);
+  }
+}
+
+block beta(j) {
+  beta(j) ~ dnorm(0, 10);
+  llk();
+} cache mu(n) {
+  for (i = 1:n) {
+    for (k = 1:p) {
+      mu(i) += beta(k) * X(i, k);
+    }
+  }
+} update mu(n) {
+  for (i = 1:n) {
+    mu(i) += (proposal(beta(j)) - current(beta(j))) * X(i, j);
+  }
+}
+
+block logsigma(1) {
+  logsigma(1) ~ dnorm(0, 2);
+  llk();
+}
+'
+
+fit <- hobbs(
+    model = model,
+    data = dat,
+    samples = 2000,
+    burnin = 1000,
+    seed = 123,
+    out = "regression.bin"
+)
+
+draws <- read_hobbs(fit)
+colMeans(draws[paste0("beta[", seq_len(p), "]")])
+
+}
