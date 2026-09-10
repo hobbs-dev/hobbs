@@ -6,7 +6,7 @@
 
  - **Probabilistic programming language** for high dimensional problems.
 
-**See more on the website: <https://hobbs.github.io>**
+**See more on the website: <https://hobbs-dev.github.io>**
 
 **Visit the community forum: <https://groups.google.com/g/hobbs-users>**
 
