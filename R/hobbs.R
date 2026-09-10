@@ -49,6 +49,28 @@ hobbs_build_sampler <- function(rebuild = FALSE, quiet = TRUE) {
     err <- if (quiet) FALSE else ""
     cargo_args <- c("build", "--release", "--locked")
     if (!is.null(rust_target)) cargo_args <- c(cargo_args, "--target", rust_target)
+
+    # On Windows, build the standalone sampler with a statically linked C
+    # runtime.  This avoids depending on whichever MSVC/MinGW runtime happens
+    # to be visible on PATH when the package is checked or run.  CRAN's
+    # Windows builders can otherwise compile the executable successfully but
+    # fail to load it before main() with STATUS_ENTRYPOINT_NOT_FOUND (0x139).
+    old_rustflags <- Sys.getenv("RUSTFLAGS", unset = NA_character_)
+    if (.Platform$OS.type == "windows") {
+      base_flags <- if (is.na(old_rustflags)) "" else old_rustflags
+      Sys.setenv(RUSTFLAGS = trimws(paste(
+        base_flags,
+        "-C target-feature=+crt-static -C target-cpu=x86-64"
+      )))
+      on.exit({
+        if (is.na(old_rustflags)) {
+          Sys.unsetenv("RUSTFLAGS")
+        } else {
+          Sys.setenv(RUSTFLAGS = old_rustflags)
+        }
+      }, add = TRUE)
+    }
+
     status <- run_in_dir(dst, cargo, cargo_args, stdout = out, stderr = err)
     if (!identical(status, 0L)) stop("cargo build --release --locked failed", call. = FALSE)
   }
@@ -3656,13 +3678,31 @@ encode_c_include <- function(path) {
 compile_c_model <- function(model_c, workdir, compiler = NULL, cflags = NULL, quiet = FALSE, log_cache = list(enabled = FALSE)) {
   sys <- Sys.info()[["sysname"]]
   if (is.null(compiler)) {
-    compiler <- if (identical(sys, "Darwin")) {
+    # Prefer the compiler configured for this R installation.  In particular,
+    # do not blindly take the first gcc/clang on PATH on Windows: that compiler
+    # may belong to a different Rtools/MSYS installation and produce a DLL with
+    # incompatible runtime dependencies.
+    r_bin <- file.path(R.home("bin"), if (.Platform$OS.type == "windows") "R.exe" else "R")
+    r_cc <- tryCatch(
+      system2(r_bin, c("CMD", "config", "CC"), stdout = TRUE, stderr = FALSE),
+      error = function(e) character()
+    )
+    r_cc <- if (length(r_cc)) trimws(r_cc[[1L]]) else ""
+    r_cc_cmd <- if (nzchar(r_cc)) {
+      tryCatch(scan(text = r_cc, what = character(), quiet = TRUE)[1L], error = function(e) "")
+    } else {
+      ""
+    }
+
+    fallback <- if (identical(sys, "Darwin")) {
       c("clang", "cc", "gcc")
     } else if (.Platform$OS.type == "windows") {
       c("gcc", "clang", "cc")
     } else {
       c("cc", "gcc", "clang")
     }
+    compiler <- unique(c(r_cc_cmd, fallback))
+    compiler <- compiler[nzchar(compiler)]
   }
   compiler <- unname(Sys.which(compiler))
   compiler <- compiler[nzchar(compiler)]
