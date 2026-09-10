@@ -25,7 +25,7 @@ hobbs_build_sampler <- function(rebuild = FALSE, quiet = TRUE) {
   cached_target <- if (file.exists(target_stamp)) readLines(target_stamp, warn = FALSE, n = 1L) else NA_character_
   if (dir.exists(dst) && (
     !identical(cached_version, pkg_version) ||
-    (!is.null(rust_target) && !identical(cached_target, target_id))
+    !identical(cached_target, target_id)
   )) {
     unlink(dst, recursive = TRUE, force = TRUE)
   }
@@ -747,10 +747,34 @@ hobbs <- function(model,
     }
     
     # system2() on Unix can still split unquoted arguments that contain spaces
-    # in some environments, so quote command arguments defensively.
-    res <- system2(binary, shQuote(args), stdout = "", stderr = "")
+    # in some environments, so quote command arguments defensively. Capture
+    # output so platform-specific loader/runtime failures are not reduced to an
+    # opaque numeric exit status during automated checks.
+    sampler_stdout <- tempfile("hobbs-sampler-stdout-", tmpdir = workdir, fileext = ".log")
+    sampler_stderr <- tempfile("hobbs-sampler-stderr-", tmpdir = workdir, fileext = ".log")
+    on.exit(unlink(c(sampler_stdout, sampler_stderr), force = TRUE), add = TRUE)
+
+    res <- system2(
+        binary,
+        shQuote(args),
+        stdout = sampler_stdout,
+        stderr = sampler_stderr
+    )
     if (!identical(res, 0L)) {
-        stop("hobbs sampler failed with status ", res, call. = FALSE)
+        diagnostic <- c(
+            if (file.exists(sampler_stderr)) readLines(sampler_stderr, warn = FALSE),
+            if (file.exists(sampler_stdout)) readLines(sampler_stdout, warn = FALSE)
+        )
+        diagnostic <- diagnostic[nzchar(trimws(diagnostic))]
+        detail <- if (length(diagnostic)) {
+            paste0("\n", paste(diagnostic, collapse = "\n"))
+        } else {
+            ""
+        }
+        stop(
+            "hobbs sampler failed with status ", res, detail,
+            call. = FALSE
+        )
     }
     
     if (!file.exists(out_path)) {
@@ -1095,17 +1119,16 @@ exe_name <- function(x) {
 }
 
 hobbs_rust_target <- function() {
-  if (.Platform$OS.type != "windows") return(NULL)
-
-  if (grepl("aarch", R.version$platform, ignore.case = TRUE)) {
-    "aarch64-pc-windows-gnullvm"
-  } else if (grepl("clang", Sys.getenv("R_COMPILED_BY"), ignore.case = TRUE)) {
-    "x86_64-pc-windows-gnullvm"
-  } else if (grepl("i386", R.version$platform, ignore.case = TRUE)) {
-    "i686-pc-windows-gnu"
-  } else {
-    "x86_64-pc-windows-gnu"
-  }
+  # Build the standalone Rust sampler for Cargo's native host target.
+  #
+  # In particular, do not infer a Rust target from the compiler used to build
+  # R on Windows. The sampler and the model DLL are not linked together at
+  # build time: the sampler loads the DLL dynamically through LoadLibraryW and
+  # calls a plain C ABI. Forcing x86_64-pc-windows-gnu/gnullvm to mirror R's
+  # toolchain can therefore make an otherwise valid Rust executable depend on
+  # a Windows runtime that is not compatible with the machine running it.
+  # Cargo's host target is the appropriate and most portable choice here.
+  NULL
 }
 
 hobbs_sampler_executable <- function(root, rust_target = hobbs_rust_target()) {
