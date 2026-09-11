@@ -21,6 +21,7 @@ jobs:
       matrix:
         config:
           - { os: windows-latest, r: "release" }
+          - { os: windows-latest, r: "devel" }
           - { os: macos-latest,   r: "release" }
           - { os: ubuntu-latest,  r: "release" }
 
@@ -46,9 +47,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Show Rust toolchain
+        shell: bash
         run: |
           rustc --version
+          rustc -vV
           cargo --version
+          rustup show
+          rustup target list --installed
 
       # Needed because --as-cran builds the PDF manual.
       - name: Set up TinyTeX
@@ -57,6 +62,7 @@ jobs:
       # Extra Linux compiler/system libraries.
       - name: Install Linux build tools
         if: runner.os == 'Linux'
+        shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -80,26 +86,162 @@ jobs:
             any::rjags
           needs: check
 
-      - name: Show toolchain
+      - name: Show R and compiler toolchain
         shell: Rscript {0}
         run: |
-          cat("R version:\n")
+          cat("\n==================================================\n")
+          cat("R VERSION\n")
+          cat("==================================================\n")
           print(R.version)
+
+          cat("\nR.version.string:\n")
+          print(R.version.string)
 
           cat("\nPlatform:\n")
           print(R.version$platform)
 
+          cat("\nR home:\n")
+          print(R.home())
+
+          cat("\nLibrary paths:\n")
+          print(.libPaths())
+
+          cat("\n==================================================\n")
+          cat("R COMPILER CONFIGURATION\n")
+          cat("==================================================\n")
+
           cat("\nCC:\n")
           system("R CMD config CC")
 
+          cat("\nCFLAGS:\n")
+          system("R CMD config CFLAGS")
+
+          cat("\nCPPFLAGS:\n")
+          system("R CMD config CPPFLAGS")
+
           cat("\nCXX:\n")
           system("R CMD config CXX")
+
+          cat("\nCXXFLAGS:\n")
+          system("R CMD config CXXFLAGS")
+
+          cat("\nCXX11:\n")
+          system("R CMD config CXX11")
+
+          cat("\nCXX14:\n")
+          system("R CMD config CXX14")
+
+          cat("\nCXX17:\n")
+          system("R CMD config CXX17")
+
+          cat("\nCXX20:\n")
+          system("R CMD config CXX20")
+
+          cat("\nLDFLAGS:\n")
+          system("R CMD config LDFLAGS")
+
+          cat("\n==================================================\n")
+          cat("RUST TOOLCHAIN\n")
+          cat("==================================================\n")
 
           cat("\nCargo:\n")
           system("cargo --version")
 
           cat("\nRust:\n")
           system("rustc --version")
+
+          cat("\nRust verbose:\n")
+          system("rustc -vV")
+
+          cat("\nInstalled Rust targets:\n")
+          system("rustup target list --installed")
+
+          cat("\nRustup show:\n")
+          system("rustup show")
+
+          cat("\n==================================================\n")
+          cat("ENVIRONMENT\n")
+          cat("==================================================\n")
+
+          vars <- c(
+            "PATH",
+            "RTOOLS40_HOME",
+            "RTOOLS42_HOME",
+            "RTOOLS43_HOME",
+            "RTOOLS44_HOME",
+            "RTOOLS45_HOME",
+            "RTOOLS46_HOME",
+            "CC",
+            "CXX",
+            "CXX11",
+            "CXX14",
+            "CXX17",
+            "CXX20",
+            "CFLAGS",
+            "CXXFLAGS",
+            "CPPFLAGS",
+            "LDFLAGS",
+            "RUSTFLAGS",
+            "CARGO_BUILD_TARGET"
+          )
+
+          vals <- Sys.getenv(vars, unset = NA_character_)
+
+          print(
+            data.frame(
+              variable = vars,
+              value = unname(vals),
+              row.names = NULL
+            )
+          )
+
+      - name: Show Windows toolchain details
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Write-Host "=================================================="
+          Write-Host "WINDOWS ENVIRONMENT"
+          Write-Host "=================================================="
+
+          Write-Host "`nWindows version:"
+          Get-ComputerInfo |
+            Select-Object WindowsProductName, WindowsVersion, OsBuildNumber
+
+          Write-Host "`nPATH:"
+          Write-Host $env:PATH
+
+          Write-Host "`nwhere.exe R:"
+          where.exe R
+
+          Write-Host "`nwhere.exe Rscript:"
+          where.exe Rscript
+
+          Write-Host "`nwhere.exe gcc:"
+          where.exe gcc
+
+          Write-Host "`nwhere.exe g++:"
+          where.exe g++
+
+          Write-Host "`nwhere.exe make:"
+          where.exe make
+
+          Write-Host "`nwhere.exe cargo:"
+          where.exe cargo
+
+          Write-Host "`nwhere.exe rustc:"
+          where.exe rustc
+
+          Write-Host "`nGCC version:"
+          gcc --version
+
+          Write-Host "`nG++ version:"
+          g++ --version
+
+          Write-Host "`nRust verbose:"
+          rustc -vV
+
+          Write-Host "`nRust targets:"
+          rustup target list --installed
 
       # Install once so that we can explicitly verify HOBBS's runtime
       # toolchain before beginning the long package test suite.
@@ -117,18 +259,85 @@ jobs:
         run: |
           library(hobbs)
 
-          cat("\n--- hobbs_check_toolchain() ---\n")
+          cat("\n==================================================\n")
+          cat("hobbs_check_toolchain()\n")
+          cat("==================================================\n")
           print(hobbs_check_toolchain())
 
-          cat("\n--- hobbs_build_sampler() ---\n")
+          cat("\n==================================================\n")
+          cat("hobbs_build_sampler()\n")
+          cat("==================================================\n")
+
           sampler <- hobbs_build_sampler(
             rebuild = TRUE,
             quiet = FALSE
           )
+
+          cat("\nSampler path:\n")
           print(sampler)
 
-          cat("\n--- hobbs_check_sampler() ---\n")
-          stopifnot(isTRUE(hobbs_check_sampler()))
+          cat("\nSampler exists:\n")
+          print(file.exists(sampler))
+
+          if (file.exists(sampler)) {
+            cat("\nSampler file info:\n")
+            print(file.info(sampler))
+          }
+
+          cat("\n==================================================\n")
+          cat("hobbs_check_sampler()\n")
+          cat("==================================================\n")
+
+          sampler_ok <- hobbs_check_sampler()
+
+          print(sampler_ok)
+
+          stopifnot(isTRUE(sampler_ok))
+
+      - name: Directly launch HOBBS sampler
+        shell: Rscript {0}
+        run: |
+          library(hobbs)
+
+          sampler <- hobbs_build_sampler(
+            rebuild = FALSE,
+            quiet = FALSE
+          )
+
+          cat("\nSampler:\n")
+          print(sampler)
+
+          cat("\nAttempting direct sampler launch with --help\n")
+
+          output <- tempfile()
+          errors <- tempfile()
+
+          status <- system2(
+            sampler,
+            args = "--help",
+            stdout = output,
+            stderr = errors
+          )
+
+          cat("\nExit status:\n")
+          print(status)
+
+          cat("\nSTDOUT:\n")
+          if (file.exists(output)) {
+            cat(readLines(output, warn = FALSE), sep = "\n")
+          }
+
+          cat("\nSTDERR:\n")
+          if (file.exists(errors)) {
+            cat(readLines(errors, warn = FALSE), sep = "\n")
+          }
+
+          if (!identical(status, 0L)) {
+            stop(
+              "Direct sampler launch failed with status ",
+              status
+            )
+          }
 
       - name: R CMD check --as-cran
         uses: r-lib/actions/check-r-package@v2
