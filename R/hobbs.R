@@ -71,6 +71,20 @@ hobbs_build_sampler <- function(rebuild = FALSE, quiet = TRUE) {
       }, add = TRUE)
     }
 
+    cargo_home <- tempfile("hobbs-cargo-")
+    dir.create(cargo_home, recursive = TRUE, showWarnings = FALSE)
+    on.exit(unlink(cargo_home, recursive = TRUE, force = TRUE), add = TRUE)
+
+    old_cargo_home <- Sys.getenv("CARGO_HOME", unset = NA_character_)
+    Sys.setenv(CARGO_HOME = cargo_home)
+    on.exit({
+      if (is.na(old_cargo_home)) {
+        Sys.unsetenv("CARGO_HOME")
+      } else {
+        Sys.setenv(CARGO_HOME = old_cargo_home)
+      }
+    }, add = TRUE)
+
     status <- run_in_dir(dst, cargo, cargo_args, stdout = out, stderr = err)
     if (!identical(status, 0L)) stop("cargo build --release --locked failed", call. = FALSE)
   }
