@@ -803,7 +803,7 @@ hobbs <- function(model,
     res <- system2(
         binary,
         shQuote(args),
-        stdout = sampler_stdout,
+        stdout = "",
         stderr = sampler_stderr
     )
     if (!identical(res, 0L)) {

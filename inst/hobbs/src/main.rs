@@ -1525,13 +1525,13 @@ impl ProgressDisplay {
         let width = 30usize;
         let filled = (percent * width) / 100;
         let empty = width - filled;
-        eprint!(
+        print!(
             "\r|{}{}|{}%",
             "*".repeat(filled),
             " ".repeat(empty),
             percent
         );
-        let _ = std::io::stderr().flush();
+        let _ = std::io::stdout().flush();
 
         self.next_iter = if percent >= 100 {
             usize::MAX
@@ -2798,7 +2798,7 @@ fn run_block_sampler(
         }
     }
     if !cfg.quiet {
-        eprintln!();
+        println!();
     }
 
     retained_output.finish(total_iters);
@@ -3027,7 +3027,7 @@ fn run_full_scalar_sampler(
         }
     }
     if !cfg.quiet {
-        eprintln!();
+        println!();
     }
 
     retained_output.finish(total_iters);
