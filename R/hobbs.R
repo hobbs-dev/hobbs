@@ -822,6 +822,13 @@ hobbs <- function(model,
             call. = FALSE
         )
     }
+
+    if (file.exists(sampler_stderr)) {
+        sampler_messages <- readLines(sampler_stderr, warn = FALSE)
+        if (length(sampler_messages)) {
+            message(paste(sampler_messages, collapse = "\n"))
+        }
+    }
     
     if (!file.exists(out_path)) {
         stop(
