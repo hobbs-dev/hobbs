@@ -1,0 +1,19 @@
+CARGO_HOME = $(CURDIR)/.cargo
+CARGO_TARGET_DIR = $(CURDIR)/rust-target
+RUST_MANIFEST = ../inst/hobbs/Cargo.toml
+RUST_EXE = $(CARGO_TARGET_DIR)/release/hobbs
+INST_RUST_EXE = ../inst/hobbs/bin/hobbs
+CRANFLAGS = -j 2
+
+.PHONY: rust-sampler cleanup
+
+all: cleanup
+
+cleanup: $(SHLIB) rust-sampler
+	rm -Rf $(CARGO_HOME) $(CARGO_TARGET_DIR) || true
+
+rust-sampler:
+	mkdir -p ../inst/hobbs/bin
+	CARGO_HOME="$(CARGO_HOME)" CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" PATH="$${PATH}:$${HOME}/.cargo/bin" cargo build $(CRANFLAGS) --release --locked --manifest-path=$(RUST_MANIFEST)
+	cp $(RUST_EXE) $(INST_RUST_EXE)
+	chmod 755 $(INST_RUST_EXE)

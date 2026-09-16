@@ -11,6 +11,19 @@
 #' hobbs_build_sampler()
 #' @export
 hobbs_build_sampler <- function(rebuild = FALSE, quiet = TRUE) {
+  # Normal package installation builds the bundled Rust sampler through
+  # src/Makevars and installs it under inst/hobbs/bin. Prefer that CRAN-style
+  # build. A requested rebuild retains the existing user-cache build path.
+  if (!rebuild) {
+    installed_exe <- file.path(
+      system.file("hobbs", "bin", package = "hobbs"),
+      exe_name("hobbs")
+    )
+    if (file.exists(installed_exe)) {
+      return(normalizePath(installed_exe, mustWork = TRUE))
+    }
+  }
+
   src <- system.file("hobbs", package = "hobbs", mustWork = TRUE)
   cache_root <- hobbs_cache_dir()
   dst <- file.path(cache_root, "hobbs")
@@ -310,57 +323,66 @@ hobbs_check_sampler <- function(quiet = FALSE) {
     if (!is.logical(quiet) || length(quiet) != 1L || is.na(quiet)) {
         stop("`quiet` must be TRUE or FALSE.", call. = FALSE)
     }
-    
-    sampler_dir <- file.path(hobbs_cache_dir(), "hobbs")
-    
-    sampler <- hobbs_sampler_executable(
-        sampler_dir,
-        hobbs_rust_target()
+
+    bundled_sampler <- file.path(
+        system.file("hobbs", "bin", package = "hobbs"),
+        exe_name("hobbs")
     )
-    
-    version_file <- file.path(
-        sampler_dir,
-        ".hobbs_package_version"
-    )
-    
-    package_version <- as.character(
-        utils::packageVersion("hobbs")
-    )
-    
-    cached_version <- if (file.exists(version_file)) {
-        trimws(readLines(version_file, warn = FALSE, n = 1L))
+
+    if (file.exists(bundled_sampler)) {
+        sampler <- bundled_sampler
     } else {
-        NA_character_
-    }
-    
-    if (!file.exists(sampler)) {
-        if (!quiet) {
-            message(
-                "hobbs sampler is not installed. Run ",
-                "`hobbs_install_sampler()` to install it."
-            )
+        sampler_dir <- file.path(hobbs_cache_dir(), "hobbs")
+
+        sampler <- hobbs_sampler_executable(
+            sampler_dir,
+            hobbs_rust_target()
+        )
+
+        version_file <- file.path(
+            sampler_dir,
+            ".hobbs_package_version"
+        )
+
+        package_version <- as.character(
+            utils::packageVersion("hobbs")
+        )
+
+        cached_version <- if (file.exists(version_file)) {
+            trimws(readLines(version_file, warn = FALSE, n = 1L))
+        } else {
+            NA_character_
         }
-        
-        return(invisible(FALSE))
-    }
-    
-    if (
-        is.na(cached_version) ||
-        !identical(cached_version, package_version)
-    ) {
-        if (!quiet) {
-            message(
-                "The cached hobbs sampler was built for package version ",
-                if (is.na(cached_version)) "unknown" else cached_version,
-                ", but the installed package version is ",
-                package_version,
-                ". Run `hobbs_install_sampler(rebuild = TRUE)`."
-            )
+
+        if (!file.exists(sampler)) {
+            if (!quiet) {
+                message(
+                    "hobbs sampler is not installed. Run ",
+                    "`hobbs_install_sampler()` to install it."
+                )
+            }
+
+            return(invisible(FALSE))
         }
-        
-        return(invisible(FALSE))
+
+        if (
+            is.na(cached_version) ||
+            !identical(cached_version, package_version)
+        ) {
+            if (!quiet) {
+                message(
+                    "The cached hobbs sampler was built for package version ",
+                    if (is.na(cached_version)) "unknown" else cached_version,
+                    ", but the installed package version is ",
+                    package_version,
+                    ". Run `hobbs_install_sampler(rebuild = TRUE)`."
+                )
+            }
+
+            return(invisible(FALSE))
+        }
     }
-    
+
     output <- tryCatch(
         suppressWarnings(
             system2(
@@ -372,7 +394,7 @@ hobbs_check_sampler <- function(quiet = FALSE) {
         ),
         error = identity
     )
-    
+
     if (inherits(output, "error")) {
         if (!quiet) {
             message(
@@ -381,12 +403,12 @@ hobbs_check_sampler <- function(quiet = FALSE) {
                 "\nRun `hobbs_install_sampler(rebuild = TRUE)`."
             )
         }
-        
+
         return(invisible(FALSE))
     }
-    
+
     status <- attr(output, "status")
-    
+
     if (!is.null(status) && !identical(as.integer(status), 0L)) {
         if (!quiet) {
             message(
@@ -395,15 +417,15 @@ hobbs_check_sampler <- function(quiet = FALSE) {
                 ". Run `hobbs_install_sampler(rebuild = TRUE)`."
             )
         }
-        
+
         return(invisible(FALSE))
     }
-    
+
     if (!quiet) {
         message("hobbs sampler is installed and working:")
         message(normalizePath(sampler, mustWork = TRUE))
     }
-    
+
     invisible(TRUE)
 }
 

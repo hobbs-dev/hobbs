@@ -1,6 +1,6 @@
 [package]
 name = "hobbs"
-version = "0.3.9"
+version = "0.4.4"
 edition = "2021"
 
 [profile.release]
