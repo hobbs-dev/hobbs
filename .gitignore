@@ -30,6 +30,7 @@ src/*.dll
 
 # Binary/data artifacts
 *.bin
+inst/hobbs/bin/
 
 # Cache/temp files
 .cache/
