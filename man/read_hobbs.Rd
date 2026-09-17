@@ -69,13 +69,15 @@ block logsigma(1) {
 }
 '
 
+out <- tempfile("regression", fileext = ".bin")
+
 fit <- hobbs(
     model = model,
     data = dat,
     samples = 2000,
     burnin = 1000,
     seed = 123,
-    out = "regression.bin"
+    out = out
 )
 
 draws <- read_hobbs(fit)

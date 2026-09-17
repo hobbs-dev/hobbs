@@ -1,5 +1,4 @@
 TARGET = $(shell "$(R_HOME)/bin$(R_ARCH_BIN)/Rscript.exe" "../tools/rustarch.R")
-CARGO_HOME = $(CURDIR)/.cargo
 CARGO_TARGET_DIR = $(CURDIR)/rust-target
 RUST_MANIFEST = ../inst/hobbs/Cargo.toml
 RUST_EXE = $(CARGO_TARGET_DIR)/$(TARGET)/release/hobbs.exe
@@ -11,9 +10,10 @@ CRANFLAGS = -j 2
 all: cleanup
 
 cleanup: $(SHLIB) rust-sampler
-	rm -Rf $(CARGO_HOME) $(CARGO_TARGET_DIR)
+	rm -Rf $(CARGO_TARGET_DIR)
 
 rust-sampler:
 	mkdir -p ../inst/hobbs/bin
-	PATH="$(USERPROFILE)\\.cargo\\bin:$(PATH)" CARGO_HOME="$(CARGO_HOME)" CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" cargo build $(CRANFLAGS) --target=$(TARGET) --release --locked --manifest-path=$(RUST_MANIFEST)
+	PATH="$(USERPROFILE)\\.cargo\\bin:$(PATH)" rustc --version
+	PATH="$(USERPROFILE)\\.cargo\\bin:$(PATH)" CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" cargo build $(CRANFLAGS) --target=$(TARGET) --release --locked --manifest-path=$(RUST_MANIFEST)
 	cp $(RUST_EXE) $(INST_RUST_EXE)

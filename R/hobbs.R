@@ -661,6 +661,8 @@ hobbs_check_sampler <- function(quiet = FALSE) {
 #'   llk();
 #' }
 #' '
+#' 
+#' out <- tempfile("regression", fileext = ".bin")
 #'
 #' fit <- hobbs(
 #'   model = model,
@@ -668,7 +670,7 @@ hobbs_check_sampler <- function(quiet = FALSE) {
 #'   samples = 2000,
 #'   burnin = 1000,
 #'   seed = 123,
-#'   out = "regression.bin"
+#'   out = out
 #' )
 #'
 #' draws <- read_hobbs(fit)
@@ -1083,13 +1085,15 @@ format_hobbs_seed <- function(seed) {
 #' }
 #' '
 #' 
+#' out <- tempfile("regression", fileext = ".bin")
+#' 
 #' fit <- hobbs(
 #'     model = model,
 #'     data = dat,
 #'     samples = 2000,
 #'     burnin = 1000,
 #'     seed = 123,
-#'     out = "regression.bin"
+#'     out = out
 #' )
 #' 
 #' draws <- read_hobbs(fit)
@@ -1211,13 +1215,15 @@ is_hobbs_binary_file <- function(path) {
 #' }
 #' '
 #' 
+#' out <- tempfile("regression", fileext = ".bin")
+#' 
 #' fit <- hobbs(
 #'     model = model,
 #'     data = dat,
 #'     samples = 2000,
 #'     burnin = 1000,
 #'     seed = 123,
-#'     out = "regression.bin"
+#'     out = out
 #' )
 #' 
 #' draws <- read_hobbs(fit)
