@@ -15,5 +15,6 @@ cleanup: $(SHLIB) rust-sampler
 rust-sampler:
 	mkdir -p ../inst/hobbs/bin
 	PATH="$(USERPROFILE)\\.cargo\\bin:$(PATH)" rustc --version
-	PATH="$(USERPROFILE)\\.cargo\\bin:$(PATH)" CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" cargo build $(CRANFLAGS) --target=$(TARGET) --release --locked --manifest-path=$(RUST_MANIFEST)
+	PATH="$(USERPROFILE)\\.cargo\\bin:$(PATH)" CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="x86_64-w64-mingw32.static.posix-gcc.exe" CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" cargo build $(CRANFLAGS) --target=$(TARGET) --release --locked --manifest-path=$(RUST_MANIFEST)
+	"$(RUST_EXE)" --help
 	cp $(RUST_EXE) $(INST_RUST_EXE)
