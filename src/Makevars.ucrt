@@ -16,5 +16,4 @@ rust-sampler:
 	mkdir -p ../inst/hobbs/bin
 	PATH="$(USERPROFILE)\\.cargo\\bin:$(PATH)" rustc --version
 	PATH="$(USERPROFILE)\\.cargo\\bin:$(PATH)" CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" cargo build $(CRANFLAGS) --target=$(TARGET) --release --locked --manifest-path=$(RUST_MANIFEST)
-	"$(RUST_EXE)" --help
 	cp $(RUST_EXE) $(INST_RUST_EXE)
