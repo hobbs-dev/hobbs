@@ -14,6 +14,6 @@ cleanup: $(SHLIB) rust-sampler
 rust-sampler:
 	mkdir -p ../inst/hobbs/bin
 	PATH="$${PATH}:$${HOME}/.cargo/bin" rustc --version
-	CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" PATH="$${PATH}:$${HOME}/.cargo/bin" cargo build $(CRANFLAGS) --release --locked --manifest-path=$(RUST_MANIFEST)
+	CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" PATH="$${PATH}:$${HOME}/.cargo/bin" cargo build $(CRANFLAGS) --release --locked --bin hobbs --manifest-path=$(RUST_MANIFEST)
 	cp $(RUST_EXE) $(INST_RUST_EXE)
 	chmod 755 $(INST_RUST_EXE)
