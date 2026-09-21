@@ -395,14 +395,21 @@ jobs:
           y <- rnorm(n, 0.5, 1)
 
           model <- 'param mu(1);
+
+          func y_lpdf() {
+            for (i = 1:n) {
+              y(i) ~ dnorm(mu(1), 1);
+            }
+          }
+
           block mu(1) {
             mu(1) ~ dnorm(0, 3);
-            for (i = 1:n) y(i) - mu(1) ~ normal01();
+            y_lpdf();
           }'
 
           fit <- hobbs(
             model = model,
-            data = list(y = y),
+            data = list(n = n, y = y),
             samples = 20,
             burnin = 10,
             seed = 1,
