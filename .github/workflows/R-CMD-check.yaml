@@ -412,8 +412,7 @@ jobs:
             data = list(n = n, y = y),
             samples = 20,
             burnin = 10,
-            seed = 1,
-            quiet = FALSE
+            seed = 1
           )
 
           print(fit)
