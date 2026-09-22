@@ -1,0 +1,20 @@
+#!/bin/sh
+
+# CRAN asks Rust packages to detect Cargo/rustc during configure and to report
+# the compiler versions used. Also check the standard rustup user location,
+# which is often absent from PATH in non-interactive R installs.
+export PATH="$PATH:$HOME/.cargo/bin"
+
+if command -v cargo >/dev/null 2>&1 && command -v rustc >/dev/null 2>&1; then
+  echo "Using $(command -v cargo)"
+  cargo --version
+  rustc --version
+  exit 0
+fi
+
+echo "------------------ RUST TOOLCHAIN NOT FOUND ------------------"
+echo "hobbs requires both Cargo and rustc to build from source."
+echo "Install them with your system package manager or from:"
+echo "https://rustup.rs/"
+echo "---------------------------------------------------------------"
+exit 1
