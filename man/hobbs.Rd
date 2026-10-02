@@ -104,12 +104,12 @@ multivariate distributions.
 }
 \section{Toolchain}{
 
-hobbs models are compiled at run time. A working C compiler and Rust with
-Cargo are therefore required. Use \code{\link[=hobbs_check_toolchain]{hobbs_check_toolchain()}} to diagnose the
-local toolchain, \code{\link[=hobbs_install_sampler]{hobbs_install_sampler()}} to build the bundled Rust sampler
-into the user cache, and \code{\link[=hobbs_check_sampler]{hobbs_check_sampler()}} to verify that the cached
-sampler starts correctly. \code{hobbs()} builds or reuses the bundled sampler
-automatically when \code{binary = NULL}.
+hobbs models are compiled at run time, so ordinary use requires a working C
+compiler and the sampler built during package installation. Rust and Cargo
+are required only for source installation or an explicit sampler rebuild.
+Use \code{\link[=hobbs_check_sampler]{hobbs_check_sampler()}} to verify the installed executable, and
+\code{\link[=hobbs_build_sampler]{hobbs_build_sampler()}} for an explicit build or rebuild in the user cache.
+\code{hobbs()} uses the installed sampler and never builds it automatically.
 }
 
 \section{Parameter-local blocks}{
@@ -281,6 +281,6 @@ draws <- read_hobbs(fit)
 colMeans(draws[paste0("beta[", seq_len(p), "]")])
 }
 \seealso{
-\code{\link[=read_hobbs]{read_hobbs()}}, \code{\link[=read_hobbs_mean]{read_hobbs_mean()}}, \code{\link[=hobbs_check_toolchain]{hobbs_check_toolchain()}},
-\code{\link[=hobbs_install_sampler]{hobbs_install_sampler()}}, \code{\link[=hobbs_check_sampler]{hobbs_check_sampler()}}
+\code{\link[=read_hobbs]{read_hobbs()}}, \code{\link[=read_hobbs_mean]{read_hobbs_mean()}}, \code{\link[=hobbs_build_sampler]{hobbs_build_sampler()}},
+\code{\link[=hobbs_check_sampler]{hobbs_check_sampler()}}
 }

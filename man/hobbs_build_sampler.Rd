@@ -15,8 +15,9 @@ hobbs_build_sampler(rebuild = FALSE, quiet = TRUE)
 Path to the hobbs executable.
 }
 \description{
-Builds the Rust command-line sampler bundled in this package. Usually this is
-called automatically by \code{hobbs()} the first time it is needed.
+Returns the sampler built during package installation, or explicitly builds
+the bundled Rust sampler in the user cache when needed. Rebuilding requires
+Cargo and Rust. Normal \code{hobbs()} calls use the installed sampler directly.
 }
 \examples{
 library(hobbs)

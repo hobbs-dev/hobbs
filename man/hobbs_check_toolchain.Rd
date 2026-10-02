@@ -17,10 +17,7 @@ Invisibly returns a named character vector containing the paths to
 \code{cargo}, \code{rustc}, and the detected C compiler.
 }
 \description{
-Checks for Cargo and Rust, which are required to build the hobbs sampler,
-and a C compiler, which is required to compile hobbs models.
-}
-\examples{
-library(hobbs)
-hobbs_check_toolchain()
+Deprecated. Use \code{\link[=hobbs_check_sampler]{hobbs_check_sampler()}} to check the installed sampler.
+Rust and Cargo are needed only for source installation or explicit builds.
+This compatibility function reports build tools and the model C compiler.
 }

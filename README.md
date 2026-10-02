@@ -12,9 +12,11 @@
 
 ## Installation
 
-**hobbs** requires a C compiler and Rust with Cargo.
+**hobbs** requires a C compiler for ordinary use. Package installation builds
+the sampler; Rust and Cargo are required only when installing from source or
+explicitly rebuilding it.
 
-**Install Rust: <https://rustup.rs/>**
+**For source installation, install Rust: <https://rustup.rs/>**
 
 Windows users also need Rtools: <https://cran.r-project.org/bin/windows/Rtools/>
 
@@ -37,12 +39,10 @@ install.packages("pak")
 pak::install_github("hobbs-dev/hobbs")
 ```
 
-Once the package is installed, check your compiler toolchain, build the sampler, and check the sampler:
+Once the package is installed, check that the installed sampler starts:
 
 ```r
 library(hobbs)
-hobbs_check_toolchain()
-hobbs_build_sampler()
 hobbs_check_sampler()
 ```
 

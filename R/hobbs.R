@@ -1,7 +1,8 @@
 #' Build the bundled hobbs Rust sampler
 #'
-#' Builds the Rust command-line sampler bundled in this package. Usually this is
-#' called automatically by `hobbs()` the first time it is needed.
+#' Returns the sampler built during package installation, or explicitly builds
+#' the bundled Rust sampler in the user cache when needed. Rebuilding requires
+#' Cargo and Rust. Normal `hobbs()` calls use the installed sampler directly.
 #'
 #' @param rebuild Logical. If TRUE, force a fresh cargo build.
 #' @param quiet Logical. If TRUE, suppress build output.
@@ -15,10 +16,7 @@ hobbs_build_sampler <- function(rebuild = FALSE, quiet = TRUE) {
   # src/Makevars and installs it under inst/hobbs/bin. Prefer that CRAN-style
   # build. A requested rebuild retains the existing user-cache build path.
   if (!rebuild) {
-    installed_exe <- file.path(
-      system.file("hobbs", "bin", package = "hobbs"),
-      exe_name("hobbs")
-    )
+    installed_exe <- hobbs_installed_sampler()
     if (file.exists(installed_exe)) {
       return(normalizePath(installed_exe, mustWork = TRUE))
     }
@@ -55,6 +53,7 @@ hobbs_build_sampler <- function(rebuild = FALSE, quiet = TRUE) {
   }
 
   if (!file.exists(exe) || rebuild) {
+    hobbs_check_build_tools(quiet = quiet, stop_on_error = TRUE)
     cargo <- Sys.which("cargo")
     if (!nzchar(cargo)) stop("Could not find `cargo` on PATH. Install Rust from https://rustup.rs/ and try again.", call. = FALSE)
     ensure_rust_target(rust_target, quiet = quiet)
@@ -107,8 +106,9 @@ hobbs_build_sampler <- function(rebuild = FALSE, quiet = TRUE) {
 
 #' Check the hobbs compilation toolchain
 #'
-#' Checks for Cargo and Rust, which are required to build the hobbs sampler,
-#' and a C compiler, which is required to compile hobbs models.
+#' Deprecated. Use [hobbs_check_sampler()] to check the installed sampler.
+#' Rust and Cargo are needed only for source installation or explicit builds.
+#' This compatibility function reports build tools and the model C compiler.
 #'
 #' @param quiet Logical. If `TRUE`, suppress status messages.
 #' @param stop_on_error Logical. If `TRUE`, stop when any required tool is
@@ -116,11 +116,13 @@ hobbs_build_sampler <- function(rebuild = FALSE, quiet = TRUE) {
 #'
 #' @return Invisibly returns a named character vector containing the paths to
 #'   `cargo`, `rustc`, and the detected C compiler.
-#' @examples
-#' library(hobbs)
-#' hobbs_check_toolchain()
 #' @export
 hobbs_check_toolchain <- function(quiet = FALSE, stop_on_error = FALSE) {
+    .Deprecated("hobbs_check_sampler")
+    hobbs_check_build_tools(quiet = quiet, stop_on_error = stop_on_error)
+}
+
+hobbs_check_build_tools <- function(quiet = FALSE, stop_on_error = FALSE) {
     if (!is.logical(quiet) || length(quiet) != 1L || is.na(quiet)) {
         stop("`quiet` must be TRUE or FALSE.", call. = FALSE)
     }
@@ -250,71 +252,62 @@ hobbs_check_toolchain <- function(quiet = FALSE, stop_on_error = FALSE) {
 }
 
 
-#' Install the hobbs sampler
+#' Install the hobbs sampler (deprecated)
 #'
-#' Compiles and installs the bundled Rust sampler in the hobbs user cache.
-#' The compiled sampler is reused by subsequent hobbs sessions and models.
+#' Deprecated. Package installation builds the sampler. This compatibility
+#' function returns that executable without requiring Rust, or delegates an
+#' explicit rebuild to [hobbs_build_sampler()].
 #'
-#' @param rebuild Logical. If `TRUE`, remove and rebuild the cached sampler.
-#' @param quiet Logical. If `TRUE`, suppress build output and status messages.
-#'
-#' @return Invisibly returns the path to the installed hobbs sampler.
-#' @examples
-#' library(hobbs)
-#' hobbs_install_sampler()
+#' @param rebuild Logical. If `TRUE`, rebuild the sampler in the user cache.
+#' @param quiet Logical. If `TRUE`, suppress status messages.
+#' @return Invisibly returns the path to the sampler.
 #' @export
 hobbs_install_sampler <- function(rebuild = FALSE, quiet = FALSE) {
+    .Deprecated("hobbs_build_sampler")
     if (!is.logical(rebuild) || length(rebuild) != 1L || is.na(rebuild)) {
         stop("`rebuild` must be TRUE or FALSE.", call. = FALSE)
     }
-    
     if (!is.logical(quiet) || length(quiet) != 1L || is.na(quiet)) {
         stop("`quiet` must be TRUE or FALSE.", call. = FALSE)
     }
-    
-    hobbs_check_toolchain(
-        quiet = quiet,
-        stop_on_error = TRUE
-    )
-    
-    if (!quiet) {
-        if (rebuild) {
-            message("Rebuilding the hobbs sampler...")
-        } else {
-            message("Installing the hobbs sampler...")
-        }
+    sampler <- if (rebuild) {
+        hobbs_build_sampler(rebuild = TRUE, quiet = quiet)
+    } else {
+        hobbs_require_installed_sampler()
     }
-    
-    sampler <- hobbs_build_sampler(
-        rebuild = rebuild,
-        quiet = quiet
-    )
-    
-    if (!file.exists(sampler)) {
-        stop(
-            "The sampler build completed without creating an executable.",
-            call. = FALSE
-        )
-    }
-    
-    if (!quiet) {
-        message("hobbs sampler installed successfully:")
-        message(sampler)
-    }
-    
+    if (!quiet) message("hobbs sampler: ", sampler)
     invisible(sampler)
 }
 
+# Resolve only the executable installed with the package; never build or inspect
+# a user cache during ordinary sampling or diagnostics.
+hobbs_installed_sampler <- function() {
+    bin_dir <- system.file("hobbs", "bin", package = "hobbs")
+    if (!nzchar(bin_dir)) return("")
+    file.path(bin_dir, exe_name("hobbs"))
+}
+
+hobbs_require_installed_sampler <- function() {
+    sampler <- hobbs_installed_sampler()
+    if (!nzchar(sampler) || !file.exists(sampler)) {
+        stop(
+            "The installed hobbs sampler is missing. Reinstall the hobbs package. ",
+            "Source installation requires Cargo and Rust.",
+            call. = FALSE
+        )
+    }
+    normalizePath(sampler, mustWork = TRUE)
+}
 
 #' Check the installed hobbs sampler
 #'
-#' Checks whether a compatible hobbs sampler is installed in the user cache
-#' and verifies that the executable can be started.
+#' Checks whether the sampler installed with the package exists and can be
+#' started with `--help`. Does not require Rust, build a sampler, or modify the
+#' user cache. A C compiler is checked separately when compiling a model.
 #'
 #' @param quiet Logical. If `TRUE`, suppress status messages.
-#'
-#' @return Invisibly returns `TRUE` when a compatible sampler is installed and
-#'   working, and `FALSE` otherwise.
+#' @return Invisibly returns `TRUE` when the installed sampler starts
+#'   successfully, and `FALSE` otherwise.
 #' @examples
 #' library(hobbs)
 #' hobbs_check_sampler()
@@ -323,109 +316,30 @@ hobbs_check_sampler <- function(quiet = FALSE) {
     if (!is.logical(quiet) || length(quiet) != 1L || is.na(quiet)) {
         stop("`quiet` must be TRUE or FALSE.", call. = FALSE)
     }
-
-    bundled_sampler <- file.path(
-        system.file("hobbs", "bin", package = "hobbs"),
-        exe_name("hobbs")
-    )
-
-    if (file.exists(bundled_sampler)) {
-        sampler <- bundled_sampler
-    } else {
-        sampler_dir <- file.path(hobbs_cache_dir(), "hobbs")
-
-        sampler <- hobbs_sampler_executable(
-            sampler_dir,
-            hobbs_rust_target()
-        )
-
-        version_file <- file.path(
-            sampler_dir,
-            ".hobbs_package_version"
-        )
-
-        package_version <- as.character(
-            utils::packageVersion("hobbs")
-        )
-
-        cached_version <- if (file.exists(version_file)) {
-            trimws(readLines(version_file, warn = FALSE, n = 1L))
-        } else {
-            NA_character_
-        }
-
-        if (!file.exists(sampler)) {
-            if (!quiet) {
-                message(
-                    "hobbs sampler is not installed. Run ",
-                    "`hobbs_install_sampler()` to install it."
-                )
-            }
-
-            return(invisible(FALSE))
-        }
-
-        if (
-            is.na(cached_version) ||
-            !identical(cached_version, package_version)
-        ) {
-            if (!quiet) {
-                message(
-                    "The cached hobbs sampler was built for package version ",
-                    if (is.na(cached_version)) "unknown" else cached_version,
-                    ", but the installed package version is ",
-                    package_version,
-                    ". Run `hobbs_install_sampler(rebuild = TRUE)`."
-                )
-            }
-
-            return(invisible(FALSE))
-        }
+    sampler <- hobbs_installed_sampler()
+    if (!nzchar(sampler) || !file.exists(sampler)) {
+        if (!quiet) message("The installed hobbs sampler is missing. Reinstall the hobbs package.")
+        return(invisible(FALSE))
     }
-
+    sampler <- normalizePath(sampler, mustWork = TRUE)
     output <- tryCatch(
-        suppressWarnings(
-            system2(
-                sampler,
-                "--help",
-                stdout = TRUE,
-                stderr = TRUE
-            )
-        ),
+        suppressWarnings(system2(sampler, "--help", stdout = TRUE, stderr = TRUE)),
         error = identity
     )
-
     if (inherits(output, "error")) {
-        if (!quiet) {
-            message(
-                "The hobbs sampler exists but could not be started: ",
-                conditionMessage(output),
-                "\nRun `hobbs_install_sampler(rebuild = TRUE)`."
-            )
-        }
-
+        if (!quiet) message("hobbs sampler: ", sampler,
+                            "\nCould not start: ", conditionMessage(output))
         return(invisible(FALSE))
     }
-
     status <- attr(output, "status")
-
     if (!is.null(status) && !identical(as.integer(status), 0L)) {
         if (!quiet) {
-            message(
-                "The hobbs sampler exists but failed its startup check with status ",
-                status,
-                ". Run `hobbs_install_sampler(rebuild = TRUE)`."
-            )
+            message("hobbs sampler: ", sampler, "\nStartup failed with status ", status, ".")
+            if (length(output)) message(paste(output, collapse = "\n"))
         }
-
         return(invisible(FALSE))
     }
-
-    if (!quiet) {
-        message("hobbs sampler is installed and working:")
-        message(normalizePath(sampler, mustWork = TRUE))
-    }
-
+    if (!quiet) message("hobbs sampler is installed and working: ", sampler)
     invisible(TRUE)
 }
 
@@ -469,12 +383,12 @@ hobbs_check_sampler <- function(quiet = FALSE) {
 #' multivariate distributions.
 #'
 #' @section Toolchain:
-#' hobbs models are compiled at run time. A working C compiler and Rust with
-#' Cargo are therefore required. Use [hobbs_check_toolchain()] to diagnose the
-#' local toolchain, [hobbs_install_sampler()] to build the bundled Rust sampler
-#' into the user cache, and [hobbs_check_sampler()] to verify that the cached
-#' sampler starts correctly. `hobbs()` builds or reuses the bundled sampler
-#' automatically when `binary = NULL`.
+#' hobbs models are compiled at run time, so ordinary use requires a working C
+#' compiler and the sampler built during package installation. Rust and Cargo
+#' are required only for source installation or an explicit sampler rebuild.
+#' Use [hobbs_check_sampler()] to verify the installed executable, and
+#' [hobbs_build_sampler()] for an explicit build or rebuild in the user cache.
+#' `hobbs()` uses the installed sampler and never builds it automatically.
 #'
 #' @section Parameter-local blocks:
 #' A declaration such as
@@ -614,8 +528,8 @@ hobbs_check_sampler <- function(quiet = FALSE) {
 #'   [read_hobbs()] to read retained draws and to [read_hobbs_mean()] when the
 #'   model contains parameters declared with `save=mean`.
 #'
-#' @seealso [read_hobbs()], [read_hobbs_mean()], [hobbs_check_toolchain()],
-#'   [hobbs_install_sampler()], [hobbs_check_sampler()]
+#' @seealso [read_hobbs()], [read_hobbs_mean()], [hobbs_build_sampler()],
+#'   [hobbs_check_sampler()]
 #'
 #' @examples
 #' library(hobbs)
@@ -718,7 +632,7 @@ hobbs <- function(model,
     dir.create(workdir, recursive = TRUE, showWarnings = FALSE)
     workdir <- normalizePath(workdir, mustWork = TRUE)
     
-    binary <- hobbs_build_sampler(rebuild = FALSE, quiet = quiet)
+    binary <- hobbs_require_installed_sampler()
     binary <- normalizePath(binary, mustWork = TRUE)
     
     model_user_c <- materialize_model(model, workdir)
@@ -858,7 +772,7 @@ hobbs <- function(model,
         stop(
             "hobbs sampler reported success but did not create output file: ",
             out_path,
-            ". The cached sampler may be stale; run hobbs_install_sampler() and retry.",
+            ". Check hobbs_check_sampler() and reinstall the package if necessary.",
             call. = FALSE
         )
     }
@@ -3762,7 +3676,7 @@ compile_c_model <- function(model_c, workdir, compiler = NULL, cflags = NULL, qu
   lib <- file.path(workdir, paste0("posterior", ext))
 
   if (is.null(cflags)) {
-    opt_flags <- c("-std=gnu11", "-O3", "-DNDEBUG", "-march=native", "-flto", "-fno-math-errno", "-ffp-contract=fast", "-funroll-loops")
+    opt_flags <- c("-std=gnu11", "-O3", "-DNDEBUG", "-march=native", "-fno-math-errno", "-ffp-contract=fast", "-funroll-loops")
     cflags <- if (identical(sys, "Darwin")) {
       c(opt_flags, "-dynamiclib")
     } else if (.Platform$OS.type == "windows") {

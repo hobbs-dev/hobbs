@@ -10,12 +10,13 @@ hobbs_check_sampler(quiet = FALSE)
 \item{quiet}{Logical. If \code{TRUE}, suppress status messages.}
 }
 \value{
-Invisibly returns \code{TRUE} when a compatible sampler is installed and
-working, and \code{FALSE} otherwise.
+Invisibly returns \code{TRUE} when the installed sampler starts
+successfully, and \code{FALSE} otherwise.
 }
 \description{
-Checks whether a compatible hobbs sampler is installed in the user cache
-and verifies that the executable can be started.
+Checks whether the sampler installed with the package exists and can be
+started with \code{--help}. Does not require Rust, build a sampler, or modify the
+user cache. A C compiler is checked separately when compiling a model.
 }
 \examples{
 library(hobbs)

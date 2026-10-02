@@ -2,23 +2,20 @@
 % Please edit documentation in R/hobbs.R
 \name{hobbs_install_sampler}
 \alias{hobbs_install_sampler}
-\title{Install the hobbs sampler}
+\title{Install the hobbs sampler (deprecated)}
 \usage{
 hobbs_install_sampler(rebuild = FALSE, quiet = FALSE)
 }
 \arguments{
-\item{rebuild}{Logical. If \code{TRUE}, remove and rebuild the cached sampler.}
+\item{rebuild}{Logical. If \code{TRUE}, rebuild the sampler in the user cache.}
 
-\item{quiet}{Logical. If \code{TRUE}, suppress build output and status messages.}
+\item{quiet}{Logical. If \code{TRUE}, suppress status messages.}
 }
 \value{
-Invisibly returns the path to the installed hobbs sampler.
+Invisibly returns the path to the sampler.
 }
 \description{
-Compiles and installs the bundled Rust sampler in the hobbs user cache.
-The compiled sampler is reused by subsequent hobbs sessions and models.
-}
-\examples{
-library(hobbs)
-hobbs_install_sampler()
+Deprecated. Package installation builds the sampler. This compatibility
+function returns that executable without requiring Rust, or delegates an
+explicit rebuild to \code{\link[=hobbs_build_sampler]{hobbs_build_sampler()}}.
 }

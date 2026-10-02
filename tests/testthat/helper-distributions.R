@@ -1,6 +1,5 @@
 skip_if_hobbs_toolchain_missing <- function() {
-    testthat::skip_if(!nzchar(Sys.which("cargo")), "Cargo is required for hobbs integration tests")
-    testthat::skip_if(!nzchar(Sys.which("rustc")), "rustc is required for hobbs integration tests")
+    testthat::skip_if(!hobbs_check_sampler(quiet = TRUE), "The installed hobbs sampler is required for integration tests")
     cc <- c(Sys.which("cc"), Sys.which("clang"), Sys.which("gcc"))
     testthat::skip_if(!any(nzchar(cc)), "A C compiler is required for hobbs integration tests")
 }
