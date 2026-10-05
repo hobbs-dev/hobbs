@@ -104,23 +104,23 @@ hobbs_build_sampler <- function(rebuild = FALSE, quiet = TRUE) {
   normalizePath(exe, mustWork = TRUE)
 }
 
-#' Check the hobbs compilation toolchain
-#'
-#' Deprecated. Use [hobbs_check_sampler()] to check the installed sampler.
-#' Rust and Cargo are needed only for source installation or explicit builds.
-#' This compatibility function reports build tools and the model C compiler.
-#'
-#' @param quiet Logical. If `TRUE`, suppress status messages.
-#' @param stop_on_error Logical. If `TRUE`, stop when any required tool is
-#'   unavailable.
-#'
-#' @return Invisibly returns a named character vector containing the paths to
-#'   `cargo`, `rustc`, and the detected C compiler.
-#' @export
-hobbs_check_toolchain <- function(quiet = FALSE, stop_on_error = FALSE) {
-    .Deprecated("hobbs_check_sampler")
-    hobbs_check_build_tools(quiet = quiet, stop_on_error = stop_on_error)
-}
+# #' Check the hobbs compilation toolchain
+# #'
+# #' Deprecated. Use [hobbs_check_sampler()] to check the installed sampler.
+# #' Rust and Cargo are needed only for source installation or explicit builds.
+# #' This compatibility function reports build tools and the model C compiler.
+# #'
+# #' @param quiet Logical. If `TRUE`, suppress status messages.
+# #' @param stop_on_error Logical. If `TRUE`, stop when any required tool is
+# #'   unavailable.
+# #'
+# #' @return Invisibly returns a named character vector containing the paths to
+# #'   `cargo`, `rustc`, and the detected C compiler.
+# #' @export
+# hobbs_check_toolchain <- function(quiet = FALSE, stop_on_error = FALSE) {
+#     .Deprecated("hobbs_check_sampler")
+#     hobbs_check_build_tools(quiet = quiet, stop_on_error = stop_on_error)
+# }
 
 hobbs_check_build_tools <- function(quiet = FALSE, stop_on_error = FALSE) {
     if (!is.logical(quiet) || length(quiet) != 1L || is.na(quiet)) {
@@ -252,32 +252,32 @@ hobbs_check_build_tools <- function(quiet = FALSE, stop_on_error = FALSE) {
 }
 
 
-#' Install the hobbs sampler (deprecated)
-#'
-#' Deprecated. Package installation builds the sampler. This compatibility
-#' function returns that executable without requiring Rust, or delegates an
-#' explicit rebuild to [hobbs_build_sampler()].
-#'
-#' @param rebuild Logical. If `TRUE`, rebuild the sampler in the user cache.
-#' @param quiet Logical. If `TRUE`, suppress status messages.
-#' @return Invisibly returns the path to the sampler.
-#' @export
-hobbs_install_sampler <- function(rebuild = FALSE, quiet = FALSE) {
-    .Deprecated("hobbs_build_sampler")
-    if (!is.logical(rebuild) || length(rebuild) != 1L || is.na(rebuild)) {
-        stop("`rebuild` must be TRUE or FALSE.", call. = FALSE)
-    }
-    if (!is.logical(quiet) || length(quiet) != 1L || is.na(quiet)) {
-        stop("`quiet` must be TRUE or FALSE.", call. = FALSE)
-    }
-    sampler <- if (rebuild) {
-        hobbs_build_sampler(rebuild = TRUE, quiet = quiet)
-    } else {
-        hobbs_require_installed_sampler()
-    }
-    if (!quiet) message("hobbs sampler: ", sampler)
-    invisible(sampler)
-}
+# #' Install the hobbs sampler (deprecated)
+# #'
+# #' Deprecated. Package installation builds the sampler. This compatibility
+# #' function returns that executable without requiring Rust, or delegates an
+# #' explicit rebuild to [hobbs_build_sampler()].
+# #'
+# #' @param rebuild Logical. If `TRUE`, rebuild the sampler in the user cache.
+# #' @param quiet Logical. If `TRUE`, suppress status messages.
+# #' @return Invisibly returns the path to the sampler.
+# #' @export
+# hobbs_install_sampler <- function(rebuild = FALSE, quiet = FALSE) {
+#     .Deprecated("hobbs_build_sampler")
+#     if (!is.logical(rebuild) || length(rebuild) != 1L || is.na(rebuild)) {
+#         stop("`rebuild` must be TRUE or FALSE.", call. = FALSE)
+#     }
+#     if (!is.logical(quiet) || length(quiet) != 1L || is.na(quiet)) {
+#         stop("`quiet` must be TRUE or FALSE.", call. = FALSE)
+#     }
+#     sampler <- if (rebuild) {
+#         hobbs_build_sampler(rebuild = TRUE, quiet = quiet)
+#     } else {
+#         hobbs_require_installed_sampler()
+#     }
+#     if (!quiet) message("hobbs sampler: ", sampler)
+#     invisible(sampler)
+# }
 
 # Resolve only the executable installed with the package; never build or inspect
 # a user cache during ordinary sampling or diagnostics.
