@@ -1,7 +1,7 @@
 Package: hobbs
 Type: Package
 Title: High Dimensional Bayesian Omnibus Sampler
-Version: 0.4.5
+Version: 0.4.6
 Authors@R: person("Mike", "Kleinsasser", email = "mjkleinsa@gmail.com", 
     role = c("aut", "cre"))
 Description: Enables high dimensional statistical modeling using Bayesian
@@ -14,9 +14,10 @@ Roxygen: list(markdown = TRUE)
 SystemRequirements: Cargo (Rust's package manager), rustc, C compiler
 URL: https://hobbs-dev.github.io/
 BugReports: https://github.com/hobbs-dev/hobbs/issues
-Suggests:
-    testthat (>= 3.0.0),
-    rjags,
-    rstan
+Suggests: testthat (>= 3.0.0), rjags, rstan
 Config/testthat/edition: 3
 Config/roxygen2/version: 8.1.0
+NeedsCompilation: yes
+Packaged: 2026-10-08 12:52:07 UTC; mk
+Author: Mike Kleinsasser [aut, cre]
+Maintainer: Mike Kleinsasser <mjkleinsa@gmail.com>

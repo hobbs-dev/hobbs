@@ -489,6 +489,13 @@ hobbs_check_sampler <- function(quiet = FALSE) {
 #' associated memory/speed tradeoff. Use this option only when its approximation
 #' is acceptable for the application.
 #'
+#' @section Ordinary differential equations:
+#' ODE systems can be declared with `ode name(n_states) { ... }`
+#' and advanced with `ode_rk45(name, state, t0, t1);` for non-stiff systems
+#' or `ode_bdf(name, state, t0, t1);` for stiff systems.
+#' State uses a local `vec`; derivatives use one-based `y(i)` and `dy(i)`.
+#' See [hobbs_ode] for tolerances, subject-specific inputs, and failure handling.
+#'
 #' @param model A character string containing hobbs model source or a path to a
 #'   `.c` model file. Model source can contain `param` and `dparam`
 #'   declarations, `func` chunks, `block` declarations, probability statements,
@@ -1635,9 +1642,9 @@ generate_data_bridge_c <- function(spec, row_map_spec = NULL) {
     ctype <- if (identical(item$type, "double")) "double" else "int"
     decl <- c(decl, sprintf("/* explicit data item `%s` from hobbs(data = list(...)) */", cn))
     if (isTRUE(item$is_scalar)) {
-      decl <- c(decl, sprintf("%s %s = 0;", ctype, cn))
+      decl <- c(decl, sprintf("static %s %s = 0;", ctype, cn))
     } else {
-      decl <- c(decl, sprintf("%s *%s = NULL;", ctype, cn))
+      decl <- c(decl, sprintf("static %s *%s = NULL;", ctype, cn))
       if (isTRUE(item$is_matrix)) {
         # Matrix dimensions are exposed automatically as <name>_nrow,
         # <name>_ncol, and <name>_len. Matrix indexing is 1-based
@@ -3063,6 +3070,8 @@ translate_user_model_c <- function(model_c, workdir, param_info = NULL, block_in
   src <- expand_multi_block_declarations(src)
   extracted_cache <- extract_attached_cache_declarations(src)
   src <- extracted_cache$src
+  ode <- extract_ode_declarations(src)
+  src <- ode$src
   src <- add_implicit_block_target(src)
   src <- strip_param_declarations(src)
   translated <- translate_simple_model_signature(src)
@@ -3070,7 +3079,11 @@ translate_user_model_c <- function(model_c, workdir, param_info = NULL, block_in
   if (is.null(theta_name) || !nzchar(theta_name)) theta_name <- "theta"
   macros <- generate_param_macros(param_info, theta_name)
   cache_c <- generate_cache_c(extracted_cache$caches, param_info, theta_name)
-  translated <- c(macros, cache_c, translated)
+  if (length(ode$systems) && theta_name == "t")
+    stop("The posterior parameter-vector name cannot be `t` when using an ODE.", call. = FALSE)
+  translated <- translate_ode_calls(translated, ode$systems, theta_name)
+  ode_c <- generate_ode_c(ode$systems, theta_name)
+  translated <- c(macros, cache_c, ode_c, translated)
   translated <- translate_block_signatures(translated, theta_name, param_info = param_info)
   translated <- translate_distribution_statements(translated)
   translated <- translate_vec_declarations(translated)
@@ -3805,4 +3818,120 @@ print.hobbs_run <- function(x, ...) {
     cat("  adaptation:  ", x$adaptation, "\n", sep = "")
   }
   invisible(x)
+}
+
+
+# ODE systems are extracted before the ordinary model signature translator.
+# Only derivatives are translated here; the existing loop/vec/mat passes also
+# process generated callbacks, so the language inside an ODE stays C-like.
+extract_ode_declarations <- function(src) {
+  systems <- list()
+  out <- character()
+  i <- 1L
+  pat <- "^[[:space:]]*ode[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*\\([[:space:]]*([A-Za-z_][A-Za-z0-9_]*|[0-9]+)[[:space:]]*\\)[[:space:]]*\\{"
+  while (i <= length(src)) {
+    hit <- regmatches(src[[i]], regexec(pat, src[[i]], perl = TRUE))[[1L]]
+    if (length(hit) == 3L) {
+      nm <- hit[[2L]]
+      if (nm %in% names(systems)) stop("Duplicate ODE system `", nm, "`.", call. = FALSE)
+      if (grepl("^[0-9]+$", hit[[3L]]) && as.numeric(hit[[3L]]) < 1)
+        stop("An ODE must have at least one state.", call. = FALSE)
+      collected <- collect_braced_declaration(src, i, "ode")
+      body <- extract_func_body_lines(collected$lines)
+      for (symbol in c("y", "dy", "input")) {
+        pattern <- paste0("\\b", symbol, "[[:space:]]*\\(")
+        # Replace the opening delimiter only, then find its balanced closing
+        # delimiter. This accepts nested expressions such as y(index(i)).
+        body <- vapply(body, function(line) {
+          repeat {
+            loc <- regexpr(pattern, line, perl = TRUE)
+            if (loc[[1L]] < 0L) break
+            start <- loc[[1L]]
+            open <- start + attr(loc, "match.length") - 1L
+            chars <- strsplit(line, "", fixed = TRUE)[[1L]]
+            depth <- 1L
+            close <- open
+            while (depth > 0L && close < length(chars)) {
+              close <- close + 1L
+              if (chars[[close]] == "(") depth <- depth + 1L
+              if (chars[[close]] == ")") depth <- depth - 1L
+            }
+            if (depth != 0L) stop("Unbalanced ODE state accessor.", call. = FALSE)
+            index <- substring(line, open + 1L, close - 1L)
+            if (symbol == "input") {
+              replacement <- paste0("hobbs_ode_input(__hobbs_ode_ctx, (int)(", index, "))")
+            } else {
+              array <- if (symbol == "y") "__hobbs_ode_y" else "__hobbs_ode_dy"
+              replacement <- paste0(array, "[(int)(", index, ") - 1]")
+            }
+            line <- paste0(substring(line, 1L, start - 1L), replacement, substring(line, close + 1L))
+          }
+          line
+        }, character(1), USE.NAMES = FALSE)
+      }
+      systems[[nm]] <- list(n = hit[[3L]], body = body)
+      i <- collected$next_i
+    } else {
+      if (grepl("^[[:space:]]*ode\\b", src[[i]], perl = TRUE))
+        stop("Use `ode name(n_states) { ... }` with an integer or scalar data dimension.", call. = FALSE)
+      out <- c(out, src[[i]])
+      i <- i + 1L
+    }
+  }
+  list(src = out, systems = systems)
+}
+
+generate_ode_c <- function(systems, theta_name) {
+  out <- character()
+  for (nm in names(systems)) {
+    system <- systems[[nm]]
+    out <- c(out,
+      sprintf("static void hobbs_ode_rhs_%s(double t, const double *__hobbs_ode_y, double *__hobbs_ode_dy, void *__hobbs_ode_context_ptr) {", nm),
+      "  const hobbs_ode_context *__hobbs_ode_ctx = (const hobbs_ode_context *)__hobbs_ode_context_ptr;",
+      sprintf("  const double *%s = __hobbs_ode_ctx->theta;", theta_name),
+      sprintf("  (void)t; (void)%s; (void)__hobbs_ode_y; (void)__hobbs_ode_dy;", theta_name),
+      system$body, "}",
+      sprintf("static int hobbs_ode_solve_%s(int __hobbs_ode_method, const double *__hobbs_ode_theta, double *__hobbs_ode_state, size_t __hobbs_ode_len, double __hobbs_ode_t0, double __hobbs_ode_t1, const double *__hobbs_ode_input, size_t __hobbs_ode_input_len, double __hobbs_ode_rtol, double __hobbs_ode_atol, double __hobbs_ode_max_steps) {", nm),
+      sprintf("  const double __hobbs_ode_n = (double)(%s);", system$n),
+      "  if (!isfinite(__hobbs_ode_n) || __hobbs_ode_n < 1 || __hobbs_ode_n > INT_MAX || floor(__hobbs_ode_n) != __hobbs_ode_n || (size_t)__hobbs_ode_n != __hobbs_ode_len || !isfinite(__hobbs_ode_max_steps) || __hobbs_ode_max_steps < 1 || __hobbs_ode_max_steps > INT_MAX || floor(__hobbs_ode_max_steps) != __hobbs_ode_max_steps) return HOBBS_ODE_INVALID;",
+      "  hobbs_ode_context __hobbs_ode_ctx = {__hobbs_ode_theta, __hobbs_ode_input, __hobbs_ode_input_len};",
+      sprintf("  if (__hobbs_ode_method == 1) return hobbs_ode_bdf(hobbs_ode_rhs_%s, &__hobbs_ode_ctx, (int)__hobbs_ode_n, __hobbs_ode_state, __hobbs_ode_t0, __hobbs_ode_t1, __hobbs_ode_rtol, __hobbs_ode_atol, (int)__hobbs_ode_max_steps);", nm),
+      sprintf("  return hobbs_ode_rk45(hobbs_ode_rhs_%s, &__hobbs_ode_ctx, (int)__hobbs_ode_n, __hobbs_ode_state, __hobbs_ode_t0, __hobbs_ode_t1, __hobbs_ode_rtol, __hobbs_ode_atol, (int)__hobbs_ode_max_steps);", nm),
+      "}")
+  }
+  out
+}
+
+translate_ode_calls <- function(src, systems, theta_name) {
+  # Mutable solver state and optional subject inputs must be local vec arrays.
+  # sizeof then validates dimensions without relying on spelling of extents.
+  vec_pat <- "^[[:space:]]*vec[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*\\("
+  vectors <- unlist(lapply(src, function(line) {
+    hit <- regmatches(line, regexec(vec_pat, line, perl = TRUE))[[1L]]
+    if (length(hit) == 2L) hit[[2L]] else character()
+  }), use.names = FALSE)
+  pat <- "^([[:space:]]*)(ode_(?:rk45|bdf)(?:_tol)?)[[:space:]]*\\((.*)\\)[[:space:]]*;[[:space:]]*(?://.*)?$"
+  vapply(src, function(line) {
+    hit <- regmatches(line, regexec(pat, line, perl = TRUE))[[1L]]
+    if (length(hit) != 4L) {
+      if (grepl("^[^/]*\\bode_(?:rk45|bdf)(?:_tol)?[[:space:]]*\\(", line, perl = TRUE))
+        stop("Place each `ode_rk45(...)` or `ode_bdf(...)` call on its own line as a statement inside a posterior block or func.", call. = FALSE)
+      return(line)
+    }
+    args <- trimws(split_top_level_commas(hit[[4L]]))
+    tol <- grepl("_tol$", hit[[3L]])
+    method <- if (grepl("^ode_bdf", hit[[3L]])) "1" else "0"
+    required <- if (tol) 7L else 4L
+    if (!(length(args) %in% c(required, required + 1L)))
+      stop("Use ode_rk45/ode_bdf(system, state, t0, t1[, input]) or ode_rk45_tol/ode_bdf_tol(system, state, t0, t1, rtol, atol, max_steps[, input]).", call. = FALSE)
+    if (!(args[[1L]] %in% names(systems))) stop("Unknown ODE system `", args[[1L]], "`.", call. = FALSE)
+    if (!(args[[2L]] %in% vectors)) stop("ODE state must be a local `vec` declared in the model.", call. = FALSE)
+    input <- if (length(args) > required) args[[required + 1L]] else "NULL"
+    if (input != "NULL" && !(input %in% vectors)) stop("ODE input must be a local `vec`.", call. = FALSE)
+    size <- function(x) paste0("sizeof(", x, ") / sizeof(double)")
+    input_len <- if (input == "NULL") "0" else size(input)
+    controls <- if (tol) args[5L:7L] else c("1e-6", "1e-8", "100000")
+    call <- paste(c(method, theta_name, args[[2L]], size(args[[2L]]), args[3L:4L], input, input_len, controls), collapse = ", ")
+    paste0(hit[[2L]], "if (hobbs_ode_solve_", args[[1L]], "(", call, ") != HOBBS_ODE_OK) return -INFINITY;")
+  }, character(1), USE.NAMES = FALSE)
 }

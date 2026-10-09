@@ -221,6 +221,15 @@ associated memory/speed tradeoff. Use this option only when its approximation
 is acceptable for the application.
 }
 
+\section{Ordinary differential equations}{
+
+ODE systems can be declared with \verb{ode name(n_states) \{ ... \}}
+and advanced with \code{ode_rk45(name, state, t0, t1);} for non-stiff systems
+or \code{ode_bdf(name, state, t0, t1);} for stiff systems.
+State uses a local \code{vec}; derivatives use one-based \code{y(i)} and \code{dy(i)}.
+See \link{hobbs_ode} for tolerances, subject-specific inputs, and failure handling.
+}
+
 \examples{
 library(hobbs)
 

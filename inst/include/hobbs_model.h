@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include "hobbs_ode.h"
 
 #if defined(_WIN32)
 #include <malloc.h>

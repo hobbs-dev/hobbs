@@ -228,3 +228,20 @@ This optimization is most useful when `p` is large and parameters are updated on
 ## Next steps
 
 The same block syntax can be used for discrete parameters, sparse variable-selection models, random effects, and other models where only part of the likelihood changes for each parameter update. See <https://hobbs-dev.github.io> for more examples and reference material.
+
+## Ordinary differential equations
+
+The model language includes two adaptive plain-C solvers: Dormand–Prince RK45
+for non-stiff systems and BDF1/BDF2 for stiff systems. Declare derivatives in
+`ode name(n_states) { ... }` using `y(i)`, `dy(i)`, and time `t`. Advance a local
+state vector with `ode_rk45(name, state, t0, t1);` or
+`ode_bdf(name, state, t0, t1);` inside a posterior block. Optional local input
+vectors supply subject-specific values through `input(i)`.
+
+`ode_rk45_tol` and `ode_bdf_tol` supply explicit relative/absolute tolerances
+and a step limit. Failed solves return an invalid posterior value and leave
+the state unchanged. BDF uses Newton iterations and a dense numerical Jacobian;
+no analytic Jacobian or extra library is required. It supports orders 1 and 2
+and is intended for small to moderate stiff systems. See `help("hobbs_ode")`
+for the complete interface and limitations. Neither solver provides events,
+dense output, or sensitivities.
